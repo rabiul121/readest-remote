@@ -1,0 +1,16 @@
+.gradle/
+**/build/
+.kotlin/
+local.properties
+*.log
+*.apk
+*.aab
+*.jks
+*.keystore
+.idea/
+*.iml
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+windows-receiver/token.txt
