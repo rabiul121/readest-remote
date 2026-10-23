@@ -54,6 +54,9 @@ class MainActivity : Activity() {
     private var tokenVisible = false
     private var busy = false
     private var themeMode = THEME_AUTO
+    private var readingMode = MODE_NORMAL
+    private var receiverMode = MODE_NORMAL
+    private var modeRequestPending = false
     private var showSettings = false
 
     private data class Palette(
@@ -102,6 +105,10 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         themeMode = prefs.getString(KEY_THEME_MODE, THEME_AUTO) ?: THEME_AUTO
+        // Start with Normal selected in the remote UI. Keep the last successful
+        // receiver mode separately so the next command can deactivate it.
+        readingMode = MODE_NORMAL
+        receiverMode = prefs.getString(KEY_READING_MODE, MODE_NORMAL) ?: MODE_NORMAL
         showSettings = !hasSavedPairing()
         renderUi()
     }
@@ -190,24 +197,52 @@ class MainActivity : Activity() {
         }
         content.addView(topRow, matchWrap())
 
+        if (!showSettings) {
+            content.addView(sectionLabel("READING MODE", colors), topMargin(14))
+            val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            modeRow.addView(readingModeButton("Normal", MODE_NORMAL, R.drawable.ic_reading_mode, colors), weightButton())
+            modeRow.addView(readingModeButton("Auto", MODE_AUTOSCROLL, R.drawable.ic_mode_autoscroll, colors), weightButton().apply { marginStart = dp(5) })
+            modeRow.addView(readingModeButton("Paragraph", MODE_PARAGRAPH, R.drawable.ic_mode_paragraph, colors), weightButton().apply { marginStart = dp(5) })
+            modeRow.addView(readingModeButton("Speed", MODE_SPEED, R.drawable.ic_mode_speed, colors), weightButton().apply { marginStart = dp(5) })
+            content.addView(modeRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(64)).apply { topMargin = dp(5) })
+        }
 
         if (!showSettings) {
-            content.addView(sectionLabel("TURN PAGES", colors), topMargin(22))
+            content.addView(sectionLabel(when (readingMode) {
+                MODE_AUTOSCROLL -> "AUTO SCROLL"
+                MODE_PARAGRAPH -> "PARAGRAPH READING"
+                MODE_SPEED -> "SPEED READING · WPM"
+                else -> "TURN PAGES"
+            }, colors), topMargin(18))
+            if (readingMode == MODE_AUTOSCROLL) {
+                val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+                controls.addView(actionButton("−", "Slower auto scroll", colors) { sendAction("autoscroll_slower") }, weightButton())
+                controls.addView(actionButton("Ⅱ / ▶", "Pause or resume auto scroll", colors) { sendAction("autoscroll_pause") }, weightButton().apply { marginStart = dp(8); marginEnd = dp(8) })
+                controls.addView(actionButton("+", "Faster auto scroll", colors) { sendAction("autoscroll_faster") }, weightButton())
+                content.addView(controls, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58)).apply { topMargin = dp(6) })
+            } else if (readingMode == MODE_SPEED) {
+                val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+                controls.addView(actionButton("− WPM", "Decrease speed reading pace", colors) { sendAction("speed_slower") }, weightButton())
+                controls.addView(actionButton("Ⅱ / ▶", "Pause or resume speed reading", colors) { sendAction("speed_pause") }, weightButton().apply { marginStart = dp(8); marginEnd = dp(8) })
+                controls.addView(actionButton("+ WPM", "Increase speed reading pace", colors) { sendAction("speed_faster") }, weightButton())
+                content.addView(controls, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58)).apply { topMargin = dp(6) })
+            }
             val pageRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            pageRow.addView(pageButton("Previous page", R.drawable.ic_page_previous, "previous", colors, tall = true),
+            val isSpeed = readingMode == MODE_SPEED
+            pageRow.addView(pageButton("Previous page", R.drawable.ic_page_previous, if (isSpeed) "rsvp_previous" else "previous", colors, tall = true),
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { marginEnd = dp(8) })
-            pageRow.addView(pageButton("Next page", R.drawable.ic_page_next, "next", colors, tall = true),
+            pageRow.addView(pageButton("Next page", R.drawable.ic_page_next, if (isSpeed) "rsvp_next" else "next", colors, tall = true),
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { marginStart = dp(8) })
             content.addView(pageRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply {
                 topMargin = dp(6)
                 bottomMargin = dp(8)
             })
 
-            content.addView(sectionLabel("CHAPTERS", colors), topMargin(22))
+            content.addView(sectionLabel("CHAPTERS", colors), topMargin(if (readingMode == MODE_NORMAL || readingMode == MODE_PARAGRAPH) 22 else 10))
             val chapterRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            chapterRow.addView(pageButton("Previous chapter", R.drawable.ic_chapter_previous, "previous_chapter", colors, tall = false),
+            chapterRow.addView(pageButton("Previous chapter", R.drawable.ic_chapter_previous, if (isSpeed) "rsvp_previous_chapter" else "previous_chapter", colors, tall = false),
                 LinearLayout.LayoutParams(0, dp(76), 1f).apply { marginEnd = dp(8) })
-            chapterRow.addView(pageButton("Next chapter", R.drawable.ic_chapter_next, "next_chapter", colors, tall = false),
+            chapterRow.addView(pageButton("Next chapter", R.drawable.ic_chapter_next, if (isSpeed) "rsvp_next_chapter" else "next_chapter", colors, tall = false),
                 LinearLayout.LayoutParams(0, dp(76), 1f).apply { marginStart = dp(8) })
             content.addView(chapterRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(76)).apply {
                 topMargin = dp(8)
@@ -227,8 +262,21 @@ class MainActivity : Activity() {
                     sendAction("theme")
                 }
             }
+            val fontDown = actionButton("A−", "Decrease Readest font size", colors) {
+                sendAction("font_smaller")
+            }.apply { textSize = 18f }
+            val fontUp = actionButton("A+", "Increase Readest font size", colors) {
+                sendAction("font_larger")
+            }.apply { textSize = 18f }
+            val bottomActions = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                addView(fontDown, LinearLayout.LayoutParams(dp(54), dp(56)).apply { marginEnd = dp(6) })
+                addView(fontUp, LinearLayout.LayoutParams(dp(54), dp(56)).apply { marginEnd = dp(8) })
+                addView(laptopTheme, LinearLayout.LayoutParams(0, dp(56), 1f))
+            }
             addStatusLine(content, colors, "Keep Readest focused on the laptop.")
-            content.addView(laptopTheme, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)).apply {
+            content.addView(bottomActions, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)).apply {
                 topMargin = dp(10)
             })
             setContentView(content)
@@ -409,6 +457,70 @@ class MainActivity : Activity() {
                 onClick()
             }
         }
+
+    private fun readingModeButton(label: String, mode: String, icon: Int, colors: Palette) =
+        LinearLayout(this).apply {
+            val selected = readingMode == mode
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            background = rounded(if (selected) colors.accent else colors.surface, if (selected) Color.TRANSPARENT else colors.outline, 14)
+            isClickable = true
+            isFocusable = true
+            isEnabled = !modeRequestPending
+            alpha = if (isEnabled) 1f else 0.55f
+            contentDescription = "$label reading mode${if (selected) ", selected" else ""}"
+            val iconView = ImageView(this@MainActivity).apply {
+                setImageResource(icon)
+                imageTintList = ColorStateList.valueOf(if (selected) colors.accentText else colors.accent)
+            }
+            addView(iconView, LinearLayout.LayoutParams(dp(23), dp(23)))
+            addView(TextView(this@MainActivity).apply {
+                text = label
+                textSize = 11f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(if (selected) colors.accentText else colors.foreground)
+                gravity = Gravity.CENTER
+                maxLines = 1
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(2) })
+            setOnClickListener {
+                if (!modeRequestPending) {
+                    vibrate(this)
+                    selectReadingMode(mode)
+                }
+            }
+        }
+
+    private fun selectReadingMode(requestedMode: String) {
+        val targetMode = if (requestedMode == readingMode && requestedMode != MODE_NORMAL) MODE_NORMAL else requestedMode
+        if ((targetMode == readingMode && receiverMode == targetMode) || modeRequestPending) return
+        val previousMode = receiverMode
+        modeRequestPending = true
+        renderUi()
+        val modeData = JSONObject()
+            .put("from_mode", previousMode)
+            .put("mode", targetMode)
+        sendAction("set_mode", extraData = modeData) { succeeded ->
+            modeRequestPending = false
+            if (succeeded) {
+                readingMode = targetMode
+                receiverMode = targetMode
+                prefs.edit().putString(KEY_READING_MODE, receiverMode).apply()
+            }
+            renderUi()
+        }
+    }
+
+    private fun weightButton() = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+
+    private fun actionButton(label: String, description: String, colors: Palette, onClick: () -> Unit) = Button(this).apply {
+        text = label
+        contentDescription = description
+        isAllCaps = false
+        textSize = 15f
+        setTextColor(colors.foreground)
+        backgroundTintList = ColorStateList.valueOf(colors.surface)
+        setOnClickListener { vibrate(this); onClick() }
+    }
 
     private fun themeIcon(): Int = when (themeMode) {
         THEME_LIGHT -> R.drawable.ic_theme_light
@@ -621,8 +733,24 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun sendAction(action: String, updateStatus: Boolean = true) {
-        val details = connectionDetails() ?: return
+    private fun sendAction(
+        action: String,
+        updateStatus: Boolean = true,
+        extraData: JSONObject? = null,
+        onResult: ((Boolean) -> Unit)? = null,
+    ) {
+        if (action in setOf("rsvp_previous", "rsvp_next", "rsvp_previous_chapter", "rsvp_next_chapter")) {
+            // RSVP captures the arrow keys, so navigation exits the overlay first.
+            // Keep the phone's mode indicator aligned with the reader afterward.
+            readingMode = MODE_NORMAL
+            receiverMode = MODE_NORMAL
+            prefs.edit().putString(KEY_READING_MODE, receiverMode).apply()
+            renderUi()
+        }
+        val details = connectionDetails() ?: run {
+            onResult?.invoke(false)
+            return
+        }
         savePairing(showMessage = false)
         if (updateStatus) updateStatus(actionStatus(action), palette.muted)
         executor.execute {
@@ -637,18 +765,28 @@ class MainActivity : Activity() {
                     setRequestProperty("Content-Type", "application/json")
                     setRequestProperty("X-Remote-Token", token)
                 }
-                val body = JSONObject().put("action", action).toString().toByteArray(Charsets.UTF_8)
+                val payload = JSONObject().put("action", action)
+                extraData?.keys()?.forEach { key -> payload.put(key, extraData.get(key)) }
+                val body = payload.toString().toByteArray(Charsets.UTF_8)
                 conn.outputStream.use { it.write(body) }
                 val code = conn.responseCode
-                if (updateStatus) runOnUiThread {
-                    when {
-                        code == 200 -> updateStatus(actionSuccess(action), palette.success)
-                        code == 401 -> updateStatus("Receiver reached, but the secret does not match.", palette.danger)
-                        else -> updateStatus("Receiver replied with HTTP $code.", palette.danger)
+                runOnUiThread {
+                    if (updateStatus) {
+                        when {
+                            code == 200 -> updateStatus(actionSuccess(action), palette.success)
+                            code == 401 -> updateStatus("Receiver reached, but the secret does not match.", palette.danger)
+                            code == 409 -> updateStatus("Open Readest and focus the reader window, then retry.", palette.danger)
+                            code == 400 -> updateStatus("Receiver rejected this action. Restart receiver.py to load the updated controls.", palette.danger)
+                            else -> updateStatus("Receiver replied with HTTP $code.", palette.danger)
+                        }
                     }
+                    onResult?.invoke(code == 200)
                 }
             } catch (e: Exception) {
-                if (updateStatus) runOnUiThread { updateStatus(connectionError(e), palette.danger) }
+                runOnUiThread {
+                    if (updateStatus) updateStatus(connectionError(e), palette.danger)
+                    onResult?.invoke(false)
+                }
             } finally {
                 conn?.disconnect()
             }
@@ -656,6 +794,20 @@ class MainActivity : Activity() {
     }
 
     private fun actionStatus(action: String) = when (action) {
+        "set_mode" -> "Switching Readest reading mode…"
+        "enter_autoscroll" -> "Switching Readest to scrolled Auto Scroll…"
+        "autoscroll_to_paragraph" -> "Switching to paragraph reading…"
+        "paragraph_to_speed" -> "Starting speed reading…"
+        "speed_to_normal" -> "Closing speed reading…"
+        "autoscroll_slower" -> "Reducing Auto Scroll speed…"
+        "autoscroll_faster" -> "Increasing Auto Scroll speed…"
+        "speed_slower" -> "Reducing WPM…"
+        "speed_faster" -> "Increasing WPM…"
+        "font_smaller" -> "Decreasing Readest font size…"
+        "font_larger" -> "Increasing Readest font size…"
+        "autoscroll_pause", "speed_pause" -> "Toggling reading playback…"
+        "rsvp_previous", "rsvp_next" -> "Turning page in speed reading…"
+        "rsvp_previous_chapter", "rsvp_next_chapter" -> "Changing chapter in speed reading…"
         "previous" -> "Turning to previous page…"
         "next" -> "Turning to next page…"
         "previous_chapter" -> "Going to previous chapter…"
@@ -664,17 +816,28 @@ class MainActivity : Activity() {
     }
 
     private fun actionSuccess(action: String) = when (action) {
+        "set_mode" -> "Readest reading mode updated."
+        "enter_autoscroll" -> "Auto Scroll started."
+        "autoscroll_to_paragraph" -> "Paragraph reading started."
+        "paragraph_to_speed" -> "Speed reading started."
+        "speed_to_normal" -> "Speed reading closed."
         "previous" -> "Previous page command sent."
         "next" -> "Next page command sent."
         "previous_chapter" -> "Previous chapter command sent."
         "next_chapter" -> "Next chapter command sent."
+        "font_smaller" -> "Readest font size decreased."
+        "font_larger" -> "Readest font size increased."
         else -> "Readest theme mode cycled."
     }
 
     private fun connectionError(error: Exception): String = when (error) {
         is java.net.UnknownHostException -> "Laptop address not found. Check its Wi-Fi IP."
         is java.net.SocketTimeoutException -> "No reply. Check Wi-Fi, receiver, and firewall."
-        else -> "Could not reach receiver. Check Wi-Fi, address, port, and firewall."
+        else -> {
+            val host = prefs.getString(KEY_HOST, "") ?: ""
+            val port = prefs.getString(KEY_PORT, "18765") ?: "18765"
+            "Could not reach $host:$port (${error.javaClass.simpleName}). Check the saved laptop IP, Wi-Fi, and firewall."
+        }
     }
 
     private fun updateStatus(message: String, color: Int) {
@@ -716,6 +879,11 @@ class MainActivity : Activity() {
         private const val THEME_LIGHT = "light"
         private const val THEME_DARK = "dark"
         private const val KEY_THEME_MODE = "theme_mode"
+        private const val MODE_NORMAL = "normal"
+        private const val MODE_AUTOSCROLL = "autoscroll"
+        private const val MODE_PARAGRAPH = "paragraph"
+        private const val MODE_SPEED = "speed"
+        private const val KEY_READING_MODE = "reading_mode"
         private const val KEY_HOST = "host"
         private const val KEY_PORT = "port"
         private const val KEY_SECRET = "secret_encrypted"

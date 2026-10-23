@@ -35,6 +35,14 @@ VK_RIGHT = 0x27
 VK_MENU = 0x12
 VK_CONTROL = 0x11
 VK_SHIFT = 0x10
+VK_ESCAPE = 0x1B
+VK_J = 0x4A
+VK_A = 0x41
+VK_V = 0x56
+VK_UP = 0x26
+VK_DOWN = 0x28
+VK_OEM_PLUS = 0xBB
+VK_OEM_MINUS = 0xBD
 VK_P = 0x50
 VK_RETURN = 0x0D
 KEYEVENTF_KEYUP = 0x0002
@@ -131,6 +139,103 @@ def refocus_reading_view():
     user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
     return True
 
+def move_readest_cursor(x_fraction, y_fraction):
+    """Move the pointer to a point relative to the foreground Readest client."""
+    hwnd = user32.GetForegroundWindow()
+    if not foreground_is_readest(hwnd):
+        return False
+    rect = wintypes.RECT()
+    if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+        return False
+    point = wintypes.POINT(
+        int((rect.right - rect.left) * x_fraction),
+        int((rect.bottom - rect.top) * y_fraction),
+    )
+    if not user32.ClientToScreen(hwnd, ctypes.byref(point)):
+        return False
+    return bool(user32.SetCursorPos(point.x, point.y))
+
+def click_readest_client(x_fraction, y_fraction):
+    """Click a point relative to the foreground Readest client area."""
+    if not move_readest_cursor(x_fraction, y_fraction):
+        return False
+    time.sleep(0.12)
+    user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    return True
+
+def click_autoscroll_control(offset_from_center):
+    # Readest's pill sits 24 CSS px above the reader area's bottom. Its center
+    # is about 45 CSS px above that edge. Move to the requested button to
+    # reveal a faded pill, let its animation finish, then click once. Avoid a
+    # separate reveal click: it can land on a control while the pill animates.
+    hwnd = user32.GetForegroundWindow()
+    if not foreground_is_readest(hwnd):
+        return False
+    rect = wintypes.RECT()
+    if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+        return False
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    if width <= 0 or height <= 0:
+        return False
+    y_fraction = 1.0 - 45 / height
+    target_x = 0.5 + offset_from_center / width
+    if not move_readest_cursor(target_x, y_fraction):
+        return False
+    # The first move reveals the pill; allow its 200 ms fade/slide transition
+    # to finish before aiming at the button.
+    time.sleep(0.25)
+    user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    return True
+
+def speed_reading_navigation(key, chapter=False):
+    # RSVP captures Left/Right for WPM changes. Close the overlay before the
+    # reader handles a page or chapter navigation key.
+    press_key(VK_ESCAPE)
+    time.sleep(0.18)
+    if chapter:
+        press_chord(VK_MENU, key)
+    else:
+        press_key(key)
+
+def set_reading_mode(previous_mode, target_mode):
+    valid_modes = {"normal", "autoscroll", "paragraph", "speed"}
+    if previous_mode not in valid_modes or target_mode not in valid_modes:
+        return False
+    if not foreground_is_readest(user32.GetForegroundWindow()):
+        return False
+
+    # Always leave the current mode explicitly before entering another one.
+    if previous_mode == "autoscroll":
+        press_chord(VK_SHIFT, VK_A)
+        time.sleep(0.15)
+        press_chord(VK_SHIFT, VK_J)
+        time.sleep(0.2)
+    elif previous_mode == "paragraph":
+        press_chord(VK_SHIFT, VK_P)
+        time.sleep(0.2)
+    elif previous_mode == "speed":
+        press_key(VK_ESCAPE)
+        time.sleep(0.25)
+
+    if target_mode == "autoscroll":
+        # Auto Scroll is only active in scrolled layout.
+        press_chord(VK_SHIFT, VK_J)
+        time.sleep(0.25)
+        press_chord(VK_SHIFT, VK_A)
+    elif target_mode == "paragraph":
+        press_chord(VK_SHIFT, VK_P)
+    elif target_mode == "speed":
+        press_chord(VK_SHIFT, VK_V)
+        # If Readest offers its start-position dialog, choose option 3,
+        # "From Current Page". With no dialog, this lands harmlessly in the
+        # reader body after RSVP has started.
+        time.sleep(0.5)
+        click_readest_client(0.5, 0.61)
+    return True
+
 def cycle_readest_theme():
     # Readest exposes a Theme Mode action in its Ctrl+Shift+P command palette.
     press_chord(VK_CONTROL, VK_SHIFT, VK_P)
@@ -185,7 +290,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(400, {"ok": False, "error": "Invalid JSON"})
             return
 
-        if action == "previous":
+        if action == "set_mode":
+            if not set_reading_mode(data.get("from_mode"), data.get("mode")):
+                self.send_json(409, {"ok": False, "error": "Readest must be focused and mode names must be valid"})
+                return
+        elif action == "previous":
             press_key(VK_LEFT)
         elif action == "next":
             press_key(VK_RIGHT)
@@ -195,6 +304,52 @@ class Handler(BaseHTTPRequestHandler):
             press_chord(VK_MENU, VK_RIGHT)
         elif action == "theme":
             cycle_readest_theme()
+        elif action == "font_larger":
+            press_chord(VK_CONTROL, VK_OEM_PLUS)
+        elif action == "font_smaller":
+            press_chord(VK_CONTROL, VK_OEM_MINUS)
+        elif action == "enter_autoscroll":
+            # Readest's Auto Scroll only runs in scrolled layout.
+            press_chord(VK_SHIFT, VK_J)
+            time.sleep(0.2)
+            press_chord(VK_SHIFT, VK_A)
+        elif action == "autoscroll_to_paragraph":
+            press_chord(VK_SHIFT, VK_A)
+            time.sleep(0.15)
+            press_chord(VK_SHIFT, VK_J)
+            time.sleep(0.15)
+            press_chord(VK_SHIFT, VK_P)
+        elif action == "paragraph_to_speed":
+            press_chord(VK_SHIFT, VK_P)
+            time.sleep(0.15)
+            press_chord(VK_SHIFT, VK_V)
+        elif action == "speed_to_normal":
+            press_key(VK_ESCAPE)
+        elif action == "autoscroll_pause":
+            # A click in the reader pauses or resumes an active Auto Scroll session.
+            click_readest_client(0.5, 0.5)
+        elif action == "autoscroll_slower":
+            if not click_autoscroll_control(-94):
+                self.send_json(409, {"ok": False, "error": "Readest must be focused to adjust Auto Scroll speed"})
+                return
+        elif action == "autoscroll_faster":
+            if not click_autoscroll_control(0):
+                self.send_json(409, {"ok": False, "error": "Readest must be focused to adjust Auto Scroll speed"})
+                return
+        elif action == "speed_pause":
+            press_key(0x20)  # Space toggles RSVP playback.
+        elif action == "speed_slower":
+            press_key(VK_DOWN)
+        elif action == "speed_faster":
+            press_key(VK_UP)
+        elif action == "rsvp_previous":
+            speed_reading_navigation(VK_LEFT)
+        elif action == "rsvp_next":
+            speed_reading_navigation(VK_RIGHT)
+        elif action == "rsvp_previous_chapter":
+            speed_reading_navigation(VK_LEFT, chapter=True)
+        elif action == "rsvp_next_chapter":
+            speed_reading_navigation(VK_RIGHT, chapter=True)
         else:
             self.send_json(400, {"ok": False, "error": "Unknown action"})
             return
