@@ -10,8 +10,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-# IMPORTANT: Replace this with a long random secret and enter the same value
-# in the Android app. Do not share this secret.
+# The shared secret is loaded from ignored token.txt or READEST_REMOTE_TOKEN.
+# Keep it private and enter the same value in the Android app.
 TOKEN_FILE = os.path.join(os.path.dirname(__file__), "token.txt")
 
 def load_token():
@@ -205,7 +205,7 @@ class Handler(BaseHTTPRequestHandler):
         print("%s - %s" % (self.address_string(), fmt % args))
 
 if TOKEN == "CHANGE_THIS_TO_A_LONG_RANDOM_SECRET":
-    print("WARNING: Change TOKEN in receiver.py before using this on your network.")
+    print("WARNING: Set a long random secret in token.txt before using this on your network.")
 
 class ServerController:
     def __init__(self):
