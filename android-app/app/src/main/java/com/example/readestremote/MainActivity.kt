@@ -502,9 +502,14 @@ class MainActivity : Activity() {
     private fun isLight(color: Int): Boolean = Color.red(color) * 299 + Color.green(color) * 587 + Color.blue(color) * 114 > 150000
 
     private fun connectionDetails(): Triple<String, Int, String>? {
-        val host = hostInput.text.toString().trim()
-        val port = portInput.text.toString().trim().toIntOrNull()
-        val token = tokenInput.text.toString()
+        val editingConnection = showSettings && ::hostInput.isInitialized &&
+            ::portInput.isInitialized && ::tokenInput.isInitialized
+        val host = if (editingConnection) hostInput.text.toString().trim()
+            else (prefs.getString(KEY_HOST, "") ?: "").trim()
+        val portText = if (editingConnection) portInput.text.toString().trim()
+            else prefs.getString(KEY_PORT, "") ?: ""
+        val port = portText.toIntOrNull()
+        val token = if (editingConnection) tokenInput.text.toString() else readStoredSecret()
         if (host.isBlank() || port == null || port !in 1..65535 || token.isBlank()) {
             updateStatus("Enter a valid laptop IP, port, and secret.", palette.danger)
             return null
