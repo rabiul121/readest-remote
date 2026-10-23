@@ -166,9 +166,9 @@ def click_readest_client(x_fraction, y_fraction):
 
 def click_autoscroll_control(offset_from_center):
     # Readest's pill sits 24 CSS px above the reader area's bottom. Its center
-    # is about 45 CSS px above that edge. Move to the requested button to
-    # reveal a faded pill, let its animation finish, then click once. Avoid a
-    # separate reveal click: it can land on a control while the pill animates.
+    # is about 45 CSS px above that edge. Move away first so Windows generates
+    # a fresh mouse-move event even when the pointer was already on the button;
+    # that event reveals a faded pill. Then move to the target and click once.
     hwnd = user32.GetForegroundWindow()
     if not foreground_is_readest(hwnd):
         return False
@@ -181,13 +181,17 @@ def click_autoscroll_control(offset_from_center):
         return False
     y_fraction = 1.0 - 45 / height
     target_x = 0.5 + offset_from_center / width
+    if not move_readest_cursor(0.5, 0.5):
+        return False
+    time.sleep(0.25)
     if not move_readest_cursor(target_x, y_fraction):
         return False
-    # The first move reveals the pill; allow its 200 ms fade/slide transition
-    # to finish before aiming at the button.
-    time.sleep(0.25)
+    time.sleep(0.12)
     user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
     user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    # Let the bar's normal hide timer run after the remote click. If the pointer
+    # stays over the pill, Readest intentionally keeps it visible while hovered.
+    move_readest_cursor(0.5, 0.5)
     return True
 
 def speed_reading_navigation(key, chapter=False):
