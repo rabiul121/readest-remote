@@ -195,9 +195,9 @@ class MainActivity : Activity() {
             content.addView(sectionLabel("TURN PAGES", colors), topMargin(22))
             val pageRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             pageRow.addView(pageButton("Previous page", R.drawable.ic_page_previous, "previous", colors, tall = true),
-                LinearLayout.LayoutParams(0, 0, 1f).apply { marginEnd = dp(8) })
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { marginEnd = dp(8) })
             pageRow.addView(pageButton("Next page", R.drawable.ic_page_next, "next", colors, tall = true),
-                LinearLayout.LayoutParams(0, 0, 1f).apply { marginStart = dp(8) })
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { marginStart = dp(8) })
             content.addView(pageRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply {
                 topMargin = dp(6)
                 bottomMargin = dp(8)
