@@ -33,6 +33,9 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONObject
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.KeyStore
@@ -51,10 +54,13 @@ class MainActivity : Activity() {
     private lateinit var hostInput: EditText
     private lateinit var portInput: EditText
     private lateinit var tokenInput: EditText
+    private lateinit var fingerprintInput: EditText
     private lateinit var status: TextView
     private lateinit var statusDot: View
     private lateinit var saveButton: Button
     private var tokenVisible = false
+    private var scannedFingerprint = ""
+    private var scannedPairingCode = ""
     private var busy = false
     private var themeMode = THEME_AUTO
     private var readingMode = MODE_NORMAL
@@ -120,7 +126,7 @@ class MainActivity : Activity() {
     private fun renderUi() {
         val hostDraft = if (::hostInput.isInitialized) hostInput.text.toString() else prefs.getString(KEY_HOST, "") ?: ""
         val portDraft = if (::portInput.isInitialized) portInput.text.toString() else prefs.getString(KEY_PORT, "18765") ?: "18765"
-        val tokenDraft = if (::tokenInput.isInitialized) tokenInput.text.toString() else readStoredSecret()
+        val tokenDraft = if (::tokenInput.isInitialized) tokenInput.text.toString() else ""
         val colors = palette
         window.statusBarColor = colors.background
         window.navigationBarColor = colors.background
@@ -337,12 +343,21 @@ class MainActivity : Activity() {
         addressRow.addView(hostInput, LinearLayout.LayoutParams(0, dp(54), 1f).apply { marginEnd = dp(8) })
         addressRow.addView(portInput, LinearLayout.LayoutParams(dp(105), dp(54)))
         setupCard.addView(addressRow, matchWrap())
+        setupCard.addView(actionButton("▦  Scan secure pairing QR", "Scan the receiver QR to securely pair this phone", colors) {
+            scanPairingQr()
+        }, topMargin(8))
+
+        fingerprintInput = field("Receiver certificate SHA-256 fingerprint", colors).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setText(prefs.getString(KEY_FINGERPRINT, "") ?: "")
+        }
+        setupCard.addView(fingerprintInput, topMargin(8))
 
         val tokenRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        tokenInput = field("Shared secret from receiver.py", colors).apply {
+        tokenInput = field("One-time pairing code (from QR or tray)", colors).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             transformationMethod = PasswordTransformationMethod.getInstance()
             setText(tokenDraft)
@@ -378,11 +393,7 @@ class MainActivity : Activity() {
             setTextColor(colors.accentText)
             backgroundTintList = ColorStateList.valueOf(colors.accent)
             setOnClickListener {
-                if (savePairing(showMessage = false)) {
-                    showSettings = false
-                    renderUi()
-                    updateStatus("Pairing saved securely on this phone.", palette.success)
-                }
+                savePairing(showMessage = true)
             }
         }
         setupActions.addView(saveButton, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(8) })
@@ -397,7 +408,7 @@ class MainActivity : Activity() {
         setupActions.addView(testButton, LinearLayout.LayoutParams(0, dp(48), 1f))
         setupCard.addView(setupActions, topMargin(10))
 
-        addStatusLine(setupCard, colors, "Enter your laptop address, port, and receiver secret.")
+        addStatusLine(setupCard, colors, "Scan the QR in the receiver tray. Manual pairing uses the one-time code and fingerprint shown there.")
         content.addView(setupCard, topMargin(8))
 
         setContentView(scroll)
@@ -654,59 +665,77 @@ class MainActivity : Activity() {
 
     private fun isLight(color: Int): Boolean = Color.red(color) * 299 + Color.green(color) * 587 + Color.blue(color) * 114 > 150000
 
-    private fun connectionDetails(): Triple<String, Int, String>? {
-        val editingConnection = showSettings && ::hostInput.isInitialized &&
-            ::portInput.isInitialized && ::tokenInput.isInitialized
-        val host = if (editingConnection) hostInput.text.toString().trim()
-            else (prefs.getString(KEY_HOST, "") ?: "").trim()
-        val portText = if (editingConnection) portInput.text.toString().trim()
-            else prefs.getString(KEY_PORT, "") ?: ""
+    private data class Connection(val host: String, val port: Int, val fingerprint: String, val token: String, val deviceId: String)
+
+    private fun connectionDetails(): Connection? {
+        val editing = showSettings && ::hostInput.isInitialized && ::portInput.isInitialized && ::tokenInput.isInitialized
+        val host = if (editing) hostInput.text.toString().trim() else (prefs.getString(KEY_HOST, "") ?: "").trim()
+        val portText = if (editing) portInput.text.toString().trim() else prefs.getString(KEY_PORT, "") ?: ""
         val port = portText.toIntOrNull()
-        val token = if (editingConnection) tokenInput.text.toString() else readStoredSecret()
-        if (host.isBlank() || port == null || port !in 1..65535 || token.isBlank()) {
-            updateStatus("Enter a valid laptop IP, port, and secret.", palette.danger)
+        val fingerprint = prefs.getString(KEY_FINGERPRINT, "") ?: ""
+        val token = readStoredSecret()
+        val deviceId = prefs.getString(KEY_DEVICE_ID, "") ?: ""
+        if (host.isBlank() || port == null || port !in 1..65535 || fingerprint.isBlank() || token.isBlank() || deviceId.isBlank()) {
+            updateStatus("Scan the receiver QR and pair this phone first.", palette.danger)
             return null
         }
-        return Triple(host, port, token)
+        return Connection(host, port, fingerprint, token, deviceId)
     }
 
     private fun savePairing(showMessage: Boolean): Boolean {
         if (!::hostInput.isInitialized || !::portInput.isInitialized || !::tokenInput.isInitialized) return false
         val host = hostInput.text.toString().trim()
-        val portText = portInput.text.toString().trim()
-        val port = portText.toIntOrNull()
-        val secret = tokenInput.text.toString()
-        if (host.isBlank() || port == null || port !in 1..65535 || secret.isBlank()) {
-            if (showMessage) updateStatus("Enter a valid IP, port, and secret before saving.", palette.danger)
+        val port = portInput.text.toString().trim().toIntOrNull()
+        val code = if (scannedPairingCode.isNotBlank()) scannedPairingCode else tokenInput.text.toString().trim()
+        val fingerprint = if (scannedFingerprint.isNotBlank()) scannedFingerprint else fingerprintInput.text.toString().trim()
+        if (host.isBlank() || port == null || port !in 1..65535 || code.isBlank() || fingerprint.isBlank()) {
+            if (showMessage) updateStatus("Enter the address, one-time code, and receiver fingerprint.", palette.danger)
             return false
         }
-        prefs.edit()
-            .putString(KEY_HOST, host)
-            .putString(KEY_PORT, portText)
-            .putString(KEY_SECRET, encryptSecret(secret))
-            .apply()
-        if (showMessage) updateStatus("Pairing saved securely on this phone.", palette.success)
+        setBusy(true)
+        updateStatus("Pairing securely with receiver…", palette.muted)
+        val deviceId = prefs.getString(KEY_DEVICE_ID, null) ?: java.util.UUID.randomUUID().toString()
+        executor.execute {
+            var conn: HttpURLConnection? = null
+            try {
+                conn = PinnedHttp.open(host, port, fingerprint, "/pair").apply {
+                    requestMethod = "POST"; doOutput = true
+                    setRequestProperty("Content-Type", "application/json")
+                }
+                val request = JSONObject().put("pairing_code", code).put("device_id", deviceId)
+                    .put("device_name", android.os.Build.MODEL ?: "Android device").toString().toByteArray(Charsets.UTF_8)
+                conn.outputStream.use { it.write(request) }
+                val statusCode = conn.responseCode
+                val result = JSONObject((if (statusCode in 200..299) conn.inputStream else conn.errorStream).bufferedReader().use { it.readText() })
+                if (statusCode != 200) throw IllegalStateException(result.optString("error", "Pairing rejected"))
+                val pairedToken = result.getString("device_token")
+                prefs.edit().putString(KEY_HOST, host).putString(KEY_PORT, port.toString())
+                    .putString(KEY_FINGERPRINT, fingerprint).putString(KEY_DEVICE_ID, deviceId)
+                    .putString(KEY_SECRET, encryptSecret(pairedToken)).apply()
+                runOnUiThread {
+                    setBusy(false); showSettings = false; scannedPairingCode = ""; renderUi()
+                    updateStatus("This phone is securely paired.", palette.success)
+                }
+            } catch (error: Exception) {
+                runOnUiThread { setBusy(false); updateStatus(error.message ?: "Pairing failed.", palette.danger) }
+            } finally { conn?.disconnect() }
+        }
         return true
     }
 
-    private fun savePairingQuietly() {
-        if (::hostInput.isInitialized && ::tokenInput.isInitialized && hostInput.text.isNotBlank() && tokenInput.text.isNotBlank()) {
-            val port = portInput.text.toString().toIntOrNull()
-            if (port != null && port in 1..65535) savePairing(showMessage = false)
-        }
-    }
+    private fun savePairingQuietly() { /* Credentials are saved only after receiver pairing succeeds. */ }
 
     private fun readStoredSecret(): String = try {
         prefs.getString(KEY_SECRET, null)?.let(::decryptSecret) ?: ""
     } catch (_: Exception) {
-        prefs.edit().remove(KEY_SECRET).apply()
-        ""
+        prefs.edit().remove(KEY_SECRET).apply(); ""
     }
 
     private fun hasSavedPairing(): Boolean {
         val host = prefs.getString(KEY_HOST, "") ?: ""
         val port = (prefs.getString(KEY_PORT, "") ?: "").toIntOrNull()
-        return host.isNotBlank() && port != null && port in 1..65535 && readStoredSecret().isNotBlank()
+        return host.isNotBlank() && port != null && port in 1..65535 && readStoredSecret().isNotBlank() &&
+            !(prefs.getString(KEY_FINGERPRINT, "") ?: "").isBlank() && !(prefs.getString(KEY_DEVICE_ID, "") ?: "").isBlank()
     }
 
     private fun secretKey(): SecretKey {
@@ -741,18 +770,18 @@ class MainActivity : Activity() {
 
     private fun sendHealthCheck() {
         val details = connectionDetails() ?: return
-        savePairing(showMessage = false)
         setBusy(true)
         updateStatus("Checking receiver and secret…", palette.muted)
         executor.execute {
             var conn: HttpURLConnection? = null
             try {
-                val (host, port, token) = details
-                conn = (URL("http://$host:$port/verify").openConnection() as HttpURLConnection).apply {
+                val (host, port, fingerprint, token, deviceId) = details
+                conn = (PinnedHttp.open(host, port, fingerprint, "/verify")).apply {
                     requestMethod = "GET"
                     connectTimeout = 3000
                     readTimeout = 3000
-                    setRequestProperty("X-Remote-Token", token)
+                    setRequestProperty("X-Device-Token", token)
+                    setRequestProperty("X-Device-Id", deviceId)
                 }
                 val code = conn.responseCode
                 runOnUiThread {
@@ -774,6 +803,56 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun scanPairingQr() {
+        val options = GmsBarcodeScannerOptions.Builder()
+            .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+            .build()
+        try {
+            GmsBarcodeScanning.getClient(this, options).startScan()
+                .addOnSuccessListener(this) { barcode ->
+                    val rawValue = barcode.rawValue
+                    if (rawValue.isNullOrBlank()) {
+                        updateStatus("The QR code did not contain pairing information.", palette.danger)
+                        return@addOnSuccessListener
+                    }
+                    try {
+                        val pairing = JSONObject(rawValue)
+                        require(pairing.optString("type") == QR_TYPE) { "This is not a Readest Remote pairing QR." }
+                        require(pairing.optInt("version") == QR_VERSION) { "This pairing QR version is not supported." }
+                        val host = pairing.optString("host").trim()
+                        require(isIpv4Address(host)) { "The QR code does not contain a valid IPv4 address." }
+                        val port = pairing.optInt("port", DEFAULT_PORT.toInt())
+                        require(port in 1..65535) { "The QR code contains an invalid port." }
+                        val fingerprint = pairing.optString("fingerprint")
+                        val code = pairing.optString("pairing_code")
+                        require(fingerprint.matches(Regex("[0-9a-fA-F]{64}")) && code.isNotBlank()) { "QR is missing secure pairing data." }
+                        hostInput.setText(host)
+                        portInput.setText(port.toString())
+                        tokenInput.setText(code)
+                        fingerprintInput.setText(fingerprint.lowercase())
+                        scannedFingerprint = fingerprint.lowercase()
+                        scannedPairingCode = code
+                        savePairing(showMessage = true)
+                    } catch (error: Exception) {
+                        updateStatus(error.message ?: "Could not read pairing information.", palette.danger)
+                    }
+                }
+                .addOnFailureListener(this) { error ->
+                    updateStatus("QR scanner unavailable. Enter the laptop IP manually. (${error.javaClass.simpleName})", palette.danger)
+                }
+        } catch (error: Exception) {
+            updateStatus("QR scanner unavailable. Enter the laptop IP manually. (${error.javaClass.simpleName})", palette.danger)
+        }
+    }
+
+    private fun isIpv4Address(value: String): Boolean {
+        val parts = value.split('.')
+        return parts.size == 4 && parts.all { part ->
+            val octet = part.toIntOrNull()
+            octet != null && octet in 0..255 && part == octet.toString()
+        }
+    }
+
     private fun sendAction(
         action: String,
         updateStatus: Boolean = true,
@@ -792,19 +871,19 @@ class MainActivity : Activity() {
             onResult?.invoke(false)
             return
         }
-        savePairing(showMessage = false)
         if (updateStatus) updateStatus(actionStatus(action), palette.muted)
         executor.execute {
             var conn: HttpURLConnection? = null
             try {
-                val (host, port, token) = details
-                conn = (URL("http://$host:$port/turn").openConnection() as HttpURLConnection).apply {
+                val (host, port, fingerprint, token, deviceId) = details
+                conn = (PinnedHttp.open(host, port, fingerprint, "/turn")).apply {
                     requestMethod = "POST"
                     connectTimeout = 3000
                     readTimeout = 3000
                     doOutput = true
                     setRequestProperty("Content-Type", "application/json")
-                    setRequestProperty("X-Remote-Token", token)
+                    setRequestProperty("X-Device-Token", token)
+                    setRequestProperty("X-Device-Id", deviceId)
                 }
                 val payload = JSONObject().put("action", action)
                 extraData?.keys()?.forEach { key -> payload.put(key, extraData.get(key)) }
@@ -986,5 +1065,10 @@ class MainActivity : Activity() {
         private const val KEY_PORT = "port"
         private const val KEY_SECRET = "secret_encrypted"
         private const val KEY_ALIAS = "readest_remote_pairing_key"
+        private const val QR_TYPE = "readest-remote-pairing"
+        private const val KEY_FINGERPRINT = "receiver_fingerprint"
+        private const val KEY_DEVICE_ID = "device_id"
+        private const val QR_VERSION = 2
+        private const val DEFAULT_PORT = "18765"
     }
 }

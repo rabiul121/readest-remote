@@ -14,3 +14,7 @@ __pycache__/
 .venv/
 venv/
 windows-receiver/token.txt
+windows-receiver/build/
+windows-receiver/dist/
+windows-receiver/*.spec
+release-assets/

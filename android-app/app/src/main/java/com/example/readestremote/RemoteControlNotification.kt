@@ -160,15 +160,18 @@ class NotificationControlReceiver : BroadcastReceiver() {
                 val host = prefs.getString("host", "") ?: ""
                 val port = prefs.getString("port", "18765") ?: "18765"
                 val encrypted = prefs.getString("secret_encrypted", null)
-                if (host.isBlank() || encrypted.isNullOrBlank()) throw IllegalStateException("Pairing is not saved")
+                val fingerprint = prefs.getString("receiver_fingerprint", "") ?: ""
+                val deviceId = prefs.getString("device_id", "") ?: ""
+                if (host.isBlank() || encrypted.isNullOrBlank() || fingerprint.isBlank() || deviceId.isBlank()) throw IllegalStateException("Pairing is not saved")
                 val token = SecretVault.decrypt(encrypted)
-                val conn = (URL("http://$host:$port/turn").openConnection() as HttpURLConnection).apply {
+                val conn = PinnedHttp.open(host, port.toIntOrNull() ?: 18765, fingerprint, "/turn").apply {
                     requestMethod = "POST"
                     connectTimeout = 3000
                     readTimeout = 3000
                     doOutput = true
                     setRequestProperty("Content-Type", "application/json")
-                    setRequestProperty("X-Remote-Token", token)
+                    setRequestProperty("X-Device-Token", token)
+                    setRequestProperty("X-Device-Id", deviceId)
                 }
                 val body = JSONObject().put("action", command).toString().toByteArray(Charsets.UTF_8)
                 conn.outputStream.use { it.write(body) }

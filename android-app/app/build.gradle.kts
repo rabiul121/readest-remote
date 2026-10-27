@@ -16,8 +16,8 @@ android {
         applicationId = "com.example.readestremote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        versionName = "1.5.1"
+        versionCode = 16
+        versionName = "1.7.0"
     }
 
     buildTypes {
@@ -31,4 +31,8 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+}
+
+dependencies {
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
 }

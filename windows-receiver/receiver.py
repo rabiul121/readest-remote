@@ -1,35 +1,146 @@
 import argparse
 import ctypes
 from ctypes import wintypes
+import ipaddress
 import json
 import os
 import secrets
+import socket
 import shutil
 import subprocess
 import sys
-import threading
-import time
+import tempfile
 import winreg
+import time
+import threading
+import hashlib
+import ssl
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from cryptography import x509
+from cryptography.x509.oid import NameOID
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
-# The shared secret is loaded from ignored token.txt or READEST_REMOTE_TOKEN.
-# Keep it private and enter the same value in the Android app.
-TOKEN_FILE = os.path.join(os.path.dirname(__file__), "token.txt")
-
-def load_token():
-    env_token = os.environ.get("READEST_REMOTE_TOKEN", "").strip()
-    if env_token:
-        return env_token
-    try:
-        with open(TOKEN_FILE, "r", encoding="utf-8-sig") as token_file:
-            configured = token_file.read().strip()
-            return configured or "CHANGE_THIS_TO_A_LONG_RANDOM_SECRET"
-    except FileNotFoundError:
-        return "CHANGE_THIS_TO_A_LONG_RANDOM_SECRET"
-
-TOKEN = load_token()
 HOST = "0.0.0.0"
 PORT = 18765
+DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", tempfile.gettempdir()), "ReadestRemote")
+CERT_FILE = os.path.join(DATA_DIR, "receiver-cert.pem")
+KEY_FILE = os.path.join(DATA_DIR, "receiver-key.pem")
+DEVICES_FILE = os.path.join(DATA_DIR, "paired_devices.json")
+PAIR_LOCK = threading.Lock()
+PAIRING = {"code": None, "expires": 0.0, "attempts": 0}
+
+def ensure_identity():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    if not os.path.exists(CERT_FILE) or not os.path.exists(KEY_FILE):
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Readest Remote receiver")])
+        now = datetime.now(timezone.utc)
+        cert = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
+                .public_key(key.public_key()).serial_number(x509.random_serial_number())
+                .not_valid_before(now - timedelta(minutes=1)).not_valid_after(now + timedelta(days=3650))
+                .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost"), x509.IPAddress(ipaddress.IPv4Address("127.0.0.1"))]), critical=False)
+                .sign(key, hashes.SHA256()))
+        with open(KEY_FILE, "wb") as f:
+            f.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+        with open(CERT_FILE, "wb") as f:
+            f.write(cert.public_bytes(serialization.Encoding.PEM))
+        try:
+            os.chmod(KEY_FILE, 0o600)
+        except OSError:
+            pass
+    with open(CERT_FILE, "rb") as f:
+        cert = x509.load_pem_x509_certificate(f.read())
+    fingerprint = cert.fingerprint(hashes.SHA256()).hex()
+    return fingerprint
+
+def create_pairing_code():
+    code = secrets.token_urlsafe(24)
+    expires = time.time() + 180
+    with PAIR_LOCK:
+        PAIRING.update(code=code, expires=expires, attempts=0)
+    return code, expires
+
+def certificate_fingerprint():
+    with open(CERT_FILE, "rb") as f:
+        return x509.load_pem_x509_certificate(f.read()).fingerprint(hashes.SHA256()).hex()
+
+def load_devices():
+    try:
+        with open(DEVICES_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+def save_devices(devices):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    temporary = DEVICES_FILE + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as f:
+        json.dump(devices, f)
+    os.replace(temporary, DEVICES_FILE)
+
+def make_server():
+    ensure_identity()
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(CERT_FILE, KEY_FILE)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    return server
+
+def local_ipv4_addresses():
+    """Return LAN IPv4s, preferring the address Windows routes through."""
+    addresses = []
+
+    # UDP connect selects the active route without sending a packet. On a
+    # phone hotspot this normally picks the laptop's hotspot-side address.
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route_probe:
+            route_probe.connect(("192.0.2.1", 9))
+            addresses.append(route_probe.getsockname()[0])
+    except OSError:
+        pass
+
+    try:
+        for result in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET, socket.SOCK_DGRAM):
+            addresses.append(result[4][0])
+    except OSError:
+        pass
+
+    unique = []
+    for address in addresses:
+        try:
+            parsed = ipaddress.IPv4Address(address)
+        except ipaddress.AddressValueError:
+            continue
+        if parsed.is_loopback or parsed.is_link_local or parsed.is_unspecified or parsed.is_multicast:
+            continue
+        value = str(parsed)
+        if value not in unique:
+            unique.append(value)
+    return unique
+
+def address_summary(addresses=None):
+    if addresses is None:
+        addresses = local_ipv4_addresses()
+    if not addresses:
+        return "No IPv4 address found"
+    suffix = f" (+{len(addresses) - 1} more)" if len(addresses) > 1 else ""
+    return f"{addresses[0]}:{PORT}{suffix}"
+
+def copy_to_clipboard(text):
+    if os.name != "nt":
+        return False
+    try:
+        subprocess.run(
+            ["clip.exe"], input=text, text=True, check=True, timeout=3,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 # Windows virtual-key codes
 VK_LEFT = 0x25
@@ -56,7 +167,6 @@ KEYEVENTF_KEYUP = 0x0002
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-WM_CLOSE = 0x0010
 SW_RESTORE = 9
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -346,31 +456,66 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self.send_json(200, {"ok": True, "service": "Readest Remote"})
         elif self.path == "/verify":
-            provided = self.headers.get("X-Remote-Token", "")
-            if secrets.compare_digest(provided, TOKEN):
+            if self.authorized():
                 self.send_json(200, {"ok": True, "service": "Readest Remote", "authenticated": True})
             else:
                 self.send_json(401, {"ok": False, "error": "Unauthorized"})
         else:
             self.send_json(404, {"ok": False, "error": "Not found"})
 
+    def read_body(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        if length < 1 or length > 2048:
+            raise ValueError("Invalid body size")
+        data = json.loads(self.rfile.read(length).decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Expected JSON object")
+        return data
+
+    def authorized(self):
+        device_id = self.headers.get("X-Device-Id", "")
+        token = self.headers.get("X-Device-Token", "")
+        record = load_devices().get(device_id, {})
+        return bool(device_id and token and record.get("token_hash") and
+                    secrets.compare_digest(hashlib.sha256(token.encode()).hexdigest(), record["token_hash"]))
+
     def do_POST(self):
+        if self.path == "/pair":
+            try:
+                data = self.read_body()
+                device_id = str(data.get("device_id", ""))[:100]
+                code = str(data.get("pairing_code", ""))
+                if not device_id:
+                    raise ValueError("Missing device id")
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                self.send_json(400, {"ok": False, "error": "Invalid pairing request"})
+                return
+            with PAIR_LOCK:
+                valid = (PAIRING["code"] is not None and time.time() < PAIRING["expires"] and
+                         PAIRING["attempts"] < 5 and secrets.compare_digest(code, PAIRING["code"]))
+                PAIRING["attempts"] += 1
+                if valid:
+                    PAIRING.update(code=None, expires=0.0, attempts=0)
+            if not valid:
+                self.send_json(401, {"ok": False, "error": "Pairing code is invalid or expired"})
+                return
+            token = secrets.token_urlsafe(32)
+            devices = load_devices()
+            devices[device_id] = {"token_hash": hashlib.sha256(token.encode()).hexdigest(),
+                                  "name": str(data.get("device_name", "Android device"))[:80]}
+            save_devices(devices)
+            self.send_json(200, {"ok": True, "device_id": device_id, "device_token": token})
+            return
         if self.path != "/turn":
             self.send_json(404, {"ok": False, "error": "Not found"})
             return
 
-        provided = self.headers.get("X-Remote-Token", "")
-        if not secrets.compare_digest(provided, TOKEN):
+        if not self.authorized():
             self.send_json(401, {"ok": False, "error": "Unauthorized"})
             return
 
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            if length < 1 or length > 1024:
-                raise ValueError("Invalid body size")
-            data = json.loads(self.rfile.read(length).decode("utf-8"))
-            if not isinstance(data, dict):
-                raise ValueError("Expected a JSON object")
+            data = self.read_body()
             action = data.get("action")
         except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
             self.send_json(400, {"ok": False, "error": "Invalid JSON"})
@@ -472,9 +617,6 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print("%s - %s" % (self.address_string(), fmt % args))
 
-if TOKEN == "CHANGE_THIS_TO_A_LONG_RANDOM_SECRET":
-    print("WARNING: Set a long random secret in token.txt before using this on your network.")
-
 class ServerController:
     def __init__(self):
         self.server = None
@@ -489,11 +631,12 @@ class ServerController:
         with self.lock:
             if self.server is not None:
                 return
-            self.server = ThreadingHTTPServer((HOST, PORT), Handler)
+            self.server = make_server()
             self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
             self.thread.start()
         print(f"Readest Remote receiver listening on port {PORT}")
-        print("Use your laptop's Wi-Fi IPv4 address in the Android app.")
+        addresses = local_ipv4_addresses()
+        print(f"Use {addresses[0]} in the Android app." if addresses else "Could not detect a laptop IPv4 address.")
 
     def stop(self):
         with self.lock:
@@ -520,16 +663,20 @@ def startup_script_path():
 def install_startup():
     if os.name != "nt":
         raise SystemExit("Automatic startup is supported on Windows only.")
-    pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-    if not os.path.isfile(pythonw):
-        raise SystemExit(f"Could not find pythonw.exe beside {sys.executable}")
-    try:
-        import pystray  # noqa: F401
-        from PIL import Image  # noqa: F401
-    except ImportError:
-        raise SystemExit("Tray mode needs dependencies. Run: py -m pip install -r requirements.txt")
-
-    command = subprocess.list2cmdline([pythonw, os.path.abspath(__file__), "--tray"])
+    if getattr(sys, "frozen", False):
+        command = subprocess.list2cmdline([sys.executable, "--tray"])
+    else:
+        pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if not os.path.isfile(pythonw):
+            raise SystemExit(f"Could not find pythonw.exe beside {sys.executable}")
+        try:
+            import pystray  # noqa: F401
+            import qrcode  # noqa: F401
+            from PIL import Image  # noqa: F401
+            import cryptography  # noqa: F401
+        except ImportError:
+            raise SystemExit("Receiver dependencies are missing. Run setup_receiver.bat.")
+        command = subprocess.list2cmdline([pythonw, os.path.abspath(__file__), "--tray"])
     vbs_command = command.replace('"', '""')
     script = (
         'Set shell = CreateObject("WScript.Shell")\r\n'
@@ -575,20 +722,149 @@ def run_tray():
 
     controller = ServerController()
     controller.start()
+    address_cache = {"items": local_ipv4_addresses()}
+
+    def refresh_addresses():
+        address_cache["items"] = local_ipv4_addresses()
+        return address_cache["items"]
 
     def exit_app(icon, _item):
         controller.stop()
         icon.stop()
 
+    def refresh_address(icon, _item):
+        addresses = refresh_addresses()
+        current = address_summary(addresses)
+        icon.title = f"Readest Remote · {current}"
+        icon.update_menu()
+        try:
+            icon.notify(f"Current receiver address: {current}", "Readest Remote")
+        except Exception:
+            pass
+
+    def show_manual_address(icon, _item):
+        addresses = refresh_addresses()
+        preferred = addresses[0] if addresses else "No IPv4 address detected"
+        all_addresses = "\n".join(addresses) if addresses else "Check your Wi-Fi connection."
+        code, expires = create_pairing_code()
+        message = (
+            f"Preferred laptop IP: {preferred}\nPort: {PORT}\n\n"
+            f"Temporary pairing code (valid 3 minutes):\n{code}\n\n"
+            f"Receiver certificate SHA-256:\n{certificate_fingerprint()}\n\n"
+            "Enter these values in Android Connection settings.\n\n"
+            f"Detected IPv4 addresses:\n{all_addresses}"
+        )
+        icon.title = f"Readest Remote · {address_summary(addresses)}"
+        icon.update_menu()
+        ctypes.windll.user32.MessageBoxW(None, message, "Readest Remote · Manual connection", 0x40)
+
+    def copy_primary_ip(icon, _item):
+        addresses = refresh_addresses()
+        icon.title = f"Readest Remote · {address_summary(addresses)}"
+        if not addresses:
+            message = "No IPv4 address is available to copy."
+        elif copy_to_clipboard(addresses[0]):
+            message = f"Copied {addresses[0]} to the clipboard. Port: {PORT}."
+        else:
+            message = "Could not copy the address to the clipboard."
+        try:
+            icon.notify(message, "Readest Remote")
+        except Exception:
+            print(message)
+
+    def copy_all_ips(icon, _item):
+        addresses = refresh_addresses()
+        icon.title = f"Readest Remote · {address_summary(addresses)}"
+        message = "No IPv4 addresses are available." if not addresses else (
+            "Copied all IPv4 addresses." if copy_to_clipboard("\r\n".join(addresses))
+            else "Could not copy the addresses to the clipboard."
+        )
+        try:
+            icon.notify(message, "Readest Remote")
+        except Exception:
+            print(message)
+
+    def revoke_all_devices(icon, _item):
+        answer = ctypes.windll.user32.MessageBoxW(
+            None, "This will disconnect every paired phone. Continue?", "Revoke paired phones", 0x24
+        )
+        if answer == 6:
+            save_devices({})
+            try:
+                icon.notify("All paired phone credentials have been revoked.", "Readest Remote")
+            except Exception:
+                pass
+
+    def show_pairing_qr(icon, _item):
+        addresses = refresh_addresses()
+        if not addresses:
+            try:
+                icon.notify("No laptop IPv4 address is available.", "Readest Remote")
+            except Exception:
+                pass
+            return
+        host = addresses[0]
+        icon.title = f"Readest Remote · {host}:{PORT}"
+        code, expires = create_pairing_code()
+        payload = json.dumps({
+            "type": "readest-remote-pairing",
+            "version": 2,
+            "host": host,
+            "port": PORT,
+            "fingerprint": certificate_fingerprint(),
+            "pairing_code": code,
+            "expires_at": int(expires),
+        }, separators=(",", ":"))
+        try:
+            import qrcode
+            from PIL import Image, ImageDraw, ImageFont
+
+            qr = qrcode.QRCode(box_size=10, border=4)
+            qr.add_data(payload)
+            qr.make(fit=True)
+            qr_image = qr.make_image(fill_color="#14233b", back_color="white").convert("RGB")
+            canvas_width = max(480, qr_image.width + 40)
+            canvas = Image.new("RGB", (canvas_width, qr_image.height + 118), "white")
+            draw = ImageDraw.Draw(canvas)
+            font = ImageFont.load_default()
+            draw.text((20, 16), "Readest Remote pairing", fill="#14233b", font=font)
+            draw.text((20, 38), f"Laptop IP: {host}    Port: {PORT}", fill="#14233b", font=font)
+            draw.text((20, 60), "One-time code expires in 3 minutes; TLS certificate is pinned.", fill="#14233b", font=font)
+            canvas.paste(qr_image, ((canvas_width - qr_image.width) // 2, 88))
+            path = os.path.join(tempfile.gettempdir(), f"readest_remote_pairing_{os.getpid()}.png")
+            canvas.save(path)
+            os.startfile(path)
+            try:
+                icon.notify("One-time pairing QR opened. It expires in 3 minutes.", "Readest Remote")
+            except Exception:
+                pass
+        except ImportError:
+            try:
+                icon.notify("QR support is missing. Run: py -m pip install -r requirements.txt", "Readest Remote")
+            except Exception:
+                print("QR support is missing. Install requirements.txt.")
+        except OSError as error:
+            try:
+                icon.notify(f"Could not open pairing QR: {error}", "Readest Remote")
+            except Exception:
+                print(f"Could not open pairing QR: {error}")
+
     menu = pystray.Menu(
         pystray.MenuItem(lambda _item: "Receiver running" if controller.running else "Receiver stopped", None, enabled=False),
+        pystray.MenuItem(lambda _item: f"Laptop address: {address_summary(address_cache['items'])}", None, enabled=False),
+        pystray.MenuItem("Refresh IP address", refresh_address),
+        pystray.MenuItem("Show IP for manual entry", show_manual_address),
+        pystray.MenuItem("Copy laptop IP", copy_primary_ip, enabled=lambda _item: bool(address_cache["items"])),
+        pystray.MenuItem("Copy all IPv4 addresses", copy_all_ips, enabled=lambda _item: bool(address_cache["items"])),
+        pystray.MenuItem("Show pairing QR", show_pairing_qr, enabled=lambda _item: bool(address_cache["items"])),
+        pystray.MenuItem("Revoke all paired phones", revoke_all_devices),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Start receiver", lambda _icon, _item: controller.start(), enabled=lambda _item: not controller.running),
         pystray.MenuItem("Stop receiver", lambda _icon, _item: controller.stop(), enabled=lambda _item: controller.running),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Exit", exit_app),
     )
-    icon = pystray.Icon("Readest Remote", tray_image(), "Readest Remote receiver", menu)
+    icon = pystray.Icon("Readest Remote", tray_image(), f"Readest Remote · {address_summary(address_cache['items'])}", menu)
     try:
         icon.run()
     finally:
@@ -596,10 +872,10 @@ def run_tray():
 
 
 def run_console():
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    server = make_server()
     print(f"Readest Remote receiver listening on port {PORT}")
-    print("Use your laptop's Wi-Fi IPv4 address in the Android app.")
-    print("Press Ctrl+C to stop. Keep this server on a trusted private network only.")
+    print("HTTPS receiver ready. Open the tray menu and show a pairing QR.")
+    print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
