@@ -4,10 +4,12 @@ from ctypes import wintypes
 import json
 import os
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
 import time
+import winreg
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # The shared secret is loaded from ignored token.txt or READEST_REMOTE_TOKEN.
@@ -44,11 +46,18 @@ VK_DOWN = 0x28
 VK_OEM_PLUS = 0xBB
 VK_OEM_MINUS = 0xBD
 VK_P = 0x50
+VK_T = 0x54
+VK_Q = 0x51
+VK_F11 = 0x7A
+VK_OEM_4 = 0xDB
+VK_OEM_6 = 0xDD
 VK_RETURN = 0x0D
 KEYEVENTF_KEYUP = 0x0002
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+WM_CLOSE = 0x0010
+SW_RESTORE = 9
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 user32.keybd_event.argtypes = [ctypes.c_ubyte, ctypes.c_ubyte, ctypes.c_ulong, ctypes.c_size_t]
@@ -56,6 +65,16 @@ user32.keybd_event.restype = None
 user32.VkKeyScanW.argtypes = [ctypes.c_wchar]
 user32.VkKeyScanW.restype = ctypes.c_short
 user32.GetForegroundWindow.restype = wintypes.HWND
+user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+user32.SetForegroundWindow.restype = wintypes.BOOL
+user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.ShowWindow.restype = wintypes.BOOL
+user32.IsWindowVisible.argtypes = [wintypes.HWND]
+user32.IsWindowVisible.restype = wintypes.BOOL
+user32.EnumWindows.argtypes = [ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM), wintypes.LPARAM]
+user32.EnumWindows.restype = wintypes.BOOL
+user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.PostMessageW.restype = wintypes.BOOL
 user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
 user32.GetWindowThreadProcessId.restype = wintypes.DWORD
 user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
@@ -118,6 +137,64 @@ def foreground_is_readest(hwnd):
         return os.path.basename(path.value).casefold() == "readest.exe"
     finally:
         kernel32.CloseHandle(process)
+
+def readest_executable():
+    candidates = [
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Readest", "readest.exe"),
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Readest", "readest.exe"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Readest", "readest.exe"),
+    ]
+    located = shutil.which("readest.exe")
+    if located:
+        candidates.insert(0, located)
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(hive, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\readest.exe") as key:
+                registered, _ = winreg.QueryValueEx(key, None)
+                candidates.insert(0, registered.strip('"'))
+        except OSError:
+            pass
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return os.path.abspath(path)
+    return None
+
+def readest_windows():
+    found = []
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    @callback_type
+    def collect(hwnd, _):
+        if user32.IsWindowVisible(hwnd) and foreground_is_readest(hwnd):
+            found.append(hwnd)
+        return True
+
+    user32.EnumWindows(collect, 0)
+    return found
+
+def launch_readest():
+    windows = readest_windows()
+    if windows:
+        user32.ShowWindow(windows[0], SW_RESTORE)
+        user32.SetForegroundWindow(windows[0])
+        return True
+    executable = readest_executable()
+    if not executable:
+        return False
+    subprocess.Popen([executable], cwd=os.path.dirname(executable), close_fds=True)
+    return True
+
+def close_readest():
+    windows = readest_windows()
+    if not windows:
+        return False
+    # Use Readest's own Quit shortcut, as requested, instead of posting a
+    # window-close message directly.
+    user32.ShowWindow(windows[0], SW_RESTORE)
+    user32.SetForegroundWindow(windows[0])
+    time.sleep(0.08)
+    press_chord(VK_CONTROL, VK_Q)
+    return True
 
 def refocus_reading_view():
     hwnd = user32.GetForegroundWindow()
@@ -205,7 +282,7 @@ def speed_reading_navigation(key, chapter=False):
         press_key(key)
 
 def set_reading_mode(previous_mode, target_mode):
-    valid_modes = {"normal", "autoscroll", "paragraph", "speed"}
+    valid_modes = {"normal", "autoscroll", "paragraph", "speed", "tts"}
     if previous_mode not in valid_modes or target_mode not in valid_modes:
         return False
     if not foreground_is_readest(user32.GetForegroundWindow()):
@@ -223,6 +300,9 @@ def set_reading_mode(previous_mode, target_mode):
     elif previous_mode == "speed":
         press_key(VK_ESCAPE)
         time.sleep(0.25)
+    elif previous_mode == "tts":
+        press_key(VK_T)
+        time.sleep(0.2)
 
     if target_mode == "autoscroll":
         # Auto Scroll is only active in scrolled layout.
@@ -238,6 +318,8 @@ def set_reading_mode(previous_mode, target_mode):
         # reader body after RSVP has started.
         time.sleep(0.5)
         click_readest_client(0.5, 0.61)
+    elif target_mode == "tts":
+        press_key(VK_T)
     return True
 
 def cycle_readest_theme():
@@ -312,6 +394,25 @@ class Handler(BaseHTTPRequestHandler):
             press_chord(VK_CONTROL, VK_OEM_PLUS)
         elif action == "font_smaller":
             press_chord(VK_CONTROL, VK_OEM_MINUS)
+        elif action == "font_reset":
+            press_chord(VK_CONTROL, 0x30)  # Ctrl+0 resets Readest zoom.
+        elif action == "fullscreen":
+            windows = readest_windows()
+            if not windows:
+                self.send_json(409, {"ok": False, "error": "Readest is not running with an open window"})
+                return
+            user32.ShowWindow(windows[0], SW_RESTORE)
+            user32.SetForegroundWindow(windows[0])
+            time.sleep(0.08)
+            press_key(VK_F11)
+        elif action == "launch_readest":
+            if not launch_readest():
+                self.send_json(404, {"ok": False, "error": "Could not find Readest.exe in its usual install locations or App Paths"})
+                return
+        elif action == "close_readest":
+            if not close_readest():
+                self.send_json(409, {"ok": False, "error": "Readest is not running or has no open window"})
+                return
         elif action == "enter_autoscroll":
             # Readest's Auto Scroll only runs in scrolled layout.
             press_chord(VK_SHIFT, VK_J)
@@ -354,6 +455,14 @@ class Handler(BaseHTTPRequestHandler):
             speed_reading_navigation(VK_LEFT, chapter=True)
         elif action == "rsvp_next_chapter":
             speed_reading_navigation(VK_RIGHT, chapter=True)
+        elif action == "tts_toggle" or action == "tts_close":
+            press_key(VK_T)
+        elif action == "tts_pause":
+            press_key(0x20)  # Space toggles TTS playback.
+        elif action == "tts_previous":
+            press_chord(VK_CONTROL, VK_OEM_4)
+        elif action == "tts_next":
+            press_chord(VK_CONTROL, VK_OEM_6)
         else:
             self.send_json(400, {"ok": False, "error": "Unknown action"})
             return

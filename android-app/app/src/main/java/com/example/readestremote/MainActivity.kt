@@ -1,6 +1,7 @@
 package com.example.readestremote
 
 import android.app.Activity
+import android.app.NotificationManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Color
@@ -12,6 +13,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.Manifest
+import android.content.pm.PackageManager
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.text.InputType
@@ -110,6 +113,7 @@ class MainActivity : Activity() {
         readingMode = MODE_NORMAL
         receiverMode = prefs.getString(KEY_READING_MODE, MODE_NORMAL) ?: MODE_NORMAL
         showSettings = !hasSavedPairing()
+        syncPinnedNotification()
         renderUi()
     }
 
@@ -184,6 +188,13 @@ class MainActivity : Activity() {
             prefs.edit().putString(KEY_THEME_MODE, themeMode).apply()
             renderUi()
         }, LinearLayout.LayoutParams(dp(46), dp(46)).apply { marginStart = dp(4) })
+        if (!showSettings) {
+            topRow.addView(iconButton(
+                if (prefs.getBoolean(KEY_NOTIFICATION_PINNED, false)) R.drawable.ic_pin_filled else R.drawable.ic_pin,
+                if (prefs.getBoolean(KEY_NOTIFICATION_PINNED, false)) "Unpin reading controls notification" else "Pin reading controls notification",
+                colors,
+            ) { togglePinnedNotification() }, LinearLayout.LayoutParams(dp(46), dp(46)).apply { marginStart = dp(4) })
+        }
         if (showSettings && hasSavedPairing()) {
             topRow.addView(iconButton(R.drawable.ic_back, "Back to remote controls", colors) {
                 showSettings = false
@@ -204,6 +215,7 @@ class MainActivity : Activity() {
             modeRow.addView(readingModeButton("Auto", MODE_AUTOSCROLL, R.drawable.ic_mode_autoscroll, colors), weightButton().apply { marginStart = dp(5) })
             modeRow.addView(readingModeButton("Paragraph", MODE_PARAGRAPH, R.drawable.ic_mode_paragraph, colors), weightButton().apply { marginStart = dp(5) })
             modeRow.addView(readingModeButton("Speed", MODE_SPEED, R.drawable.ic_mode_speed, colors), weightButton().apply { marginStart = dp(5) })
+            modeRow.addView(readingModeButton("TTS", MODE_TTS, R.drawable.ic_mode_tts, colors), weightButton().apply { marginStart = dp(5) })
             content.addView(modeRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(64)).apply { topMargin = dp(5) })
         }
 
@@ -212,6 +224,7 @@ class MainActivity : Activity() {
                 MODE_AUTOSCROLL -> "AUTO SCROLL"
                 MODE_PARAGRAPH -> "PARAGRAPH READING"
                 MODE_SPEED -> "SPEED READING · WPM"
+                MODE_TTS -> "TEXT TO SPEECH"
                 else -> "TURN PAGES"
             }, colors), topMargin(18))
             if (readingMode == MODE_AUTOSCROLL) {
@@ -227,24 +240,31 @@ class MainActivity : Activity() {
                 controls.addView(actionButton("+ WPM", "Increase speed reading pace", colors) { sendAction("speed_faster") }, weightButton())
                 content.addView(controls, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58)).apply { topMargin = dp(6) })
             }
+            if (readingMode == MODE_TTS) {
+                val ttsControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+                ttsControls.addView(actionButton("◀", "Previous TTS sentence", colors) { sendAction("tts_previous") }, weightButton())
+                ttsControls.addView(actionButton("Ⅱ / ▶", "Play or pause Text to Speech", colors) { sendAction("tts_pause") }, weightButton().apply { marginStart = dp(6); marginEnd = dp(6) })
+                ttsControls.addView(actionButton("▶", "Next TTS sentence", colors) { sendAction("tts_next") }, weightButton())
+                ttsControls.addView(actionButton("×", "Stop Text to Speech", colors) { selectReadingMode(MODE_NORMAL) }, weightButton().apply { marginStart = dp(6) })
+                content.addView(ttsControls, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58)).apply { topMargin = dp(6) })
+            }
             val pageRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             val isSpeed = readingMode == MODE_SPEED
             pageRow.addView(pageButton("Previous page", R.drawable.ic_page_previous, if (isSpeed) "rsvp_previous" else "previous", colors, tall = true),
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { marginEnd = dp(8) })
             pageRow.addView(pageButton("Next page", R.drawable.ic_page_next, if (isSpeed) "rsvp_next" else "next", colors, tall = true),
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { marginStart = dp(8) })
-            content.addView(pageRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply {
-                topMargin = dp(6)
-                bottomMargin = dp(8)
+            if (readingMode != MODE_TTS) content.addView(pageRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply {
+                topMargin = dp(6); bottomMargin = dp(8)
             })
 
-            content.addView(sectionLabel("CHAPTERS", colors), topMargin(if (readingMode == MODE_NORMAL || readingMode == MODE_PARAGRAPH) 22 else 10))
+            if (readingMode != MODE_TTS) content.addView(sectionLabel("CHAPTERS", colors), topMargin(if (readingMode == MODE_NORMAL || readingMode == MODE_PARAGRAPH) 22 else 10))
             val chapterRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             chapterRow.addView(pageButton("Previous chapter", R.drawable.ic_chapter_previous, if (isSpeed) "rsvp_previous_chapter" else "previous_chapter", colors, tall = false),
                 LinearLayout.LayoutParams(0, dp(76), 1f).apply { marginEnd = dp(8) })
             chapterRow.addView(pageButton("Next chapter", R.drawable.ic_chapter_next, if (isSpeed) "rsvp_next_chapter" else "next_chapter", colors, tall = false),
                 LinearLayout.LayoutParams(0, dp(76), 1f).apply { marginStart = dp(8) })
-            content.addView(chapterRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(76)).apply {
+            if (readingMode != MODE_TTS) content.addView(chapterRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(76)).apply {
                 topMargin = dp(8)
             })
 
@@ -268,16 +288,36 @@ class MainActivity : Activity() {
             val fontUp = actionButton("A+", "Increase Readest font size", colors) {
                 sendAction("font_larger")
             }.apply { textSize = 18f }
+            val fontReset = actionButton("A0", "Reset Readest zoom to 100%", colors) {
+                sendAction("font_reset")
+            }.apply { textSize = 18f }
+            val fullscreen = iconButton(R.drawable.ic_fullscreen, "Toggle Readest full screen", colors) {
+                sendAction("fullscreen")
+            }
             val bottomActions = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
                 addView(fontDown, LinearLayout.LayoutParams(dp(54), dp(56)).apply { marginEnd = dp(6) })
                 addView(fontUp, LinearLayout.LayoutParams(dp(54), dp(56)).apply { marginEnd = dp(8) })
+                addView(fontReset, LinearLayout.LayoutParams(dp(54), dp(56)).apply { marginEnd = dp(8) })
+                addView(fullscreen, LinearLayout.LayoutParams(dp(46), dp(56)).apply { marginEnd = dp(8) })
                 addView(laptopTheme, LinearLayout.LayoutParams(0, dp(56), 1f))
             }
             addStatusLine(content, colors, "Keep Readest focused on the laptop.")
             content.addView(bottomActions, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)).apply {
                 topMargin = dp(10)
+            })
+            val appActions = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(actionButton("▶  Start Readest", "Start or focus Readest on the laptop", colors) {
+                    sendAction("launch_readest")
+                }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(6) })
+                addView(actionButton("×  Close Readest", "Close Readest on the laptop", colors) {
+                    sendAction("close_readest")
+                }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginStart = dp(6) })
+            }
+            content.addView(appActions, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46)).apply {
+                topMargin = dp(8)
             })
             setContentView(content)
             return
@@ -505,6 +545,7 @@ class MainActivity : Activity() {
                 readingMode = targetMode
                 receiverMode = targetMode
                 prefs.edit().putString(KEY_READING_MODE, receiverMode).apply()
+                syncPinnedNotification()
             }
             renderUi()
         }
@@ -805,6 +846,10 @@ class MainActivity : Activity() {
         "speed_faster" -> "Increasing WPM…"
         "font_smaller" -> "Decreasing Readest font size…"
         "font_larger" -> "Increasing Readest font size…"
+        "font_reset" -> "Resetting Readest zoom…"
+        "fullscreen" -> "Toggling Readest full screen…"
+        "launch_readest" -> "Starting or focusing Readest…"
+        "close_readest" -> "Closing Readest…"
         "autoscroll_pause", "speed_pause" -> "Toggling reading playback…"
         "rsvp_previous", "rsvp_next" -> "Turning page in speed reading…"
         "rsvp_previous_chapter", "rsvp_next_chapter" -> "Changing chapter in speed reading…"
@@ -827,6 +872,10 @@ class MainActivity : Activity() {
         "next_chapter" -> "Next chapter command sent."
         "font_smaller" -> "Readest font size decreased."
         "font_larger" -> "Readest font size increased."
+        "font_reset" -> "Readest zoom reset."
+        "fullscreen" -> "Readest full screen toggled."
+        "launch_readest" -> "Readest opened or focused."
+        "close_readest" -> "Readest close request sent."
         else -> "Readest theme mode cycled."
     }
 
@@ -853,9 +902,55 @@ class MainActivity : Activity() {
         if (::saveButton.isInitialized) saveButton.isEnabled = !value
     }
 
+    private fun togglePinnedNotification() {
+        if (prefs.getBoolean(KEY_NOTIFICATION_PINNED, false)) {
+            prefs.edit().putBoolean(KEY_NOTIFICATION_PINNED, false).apply()
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).cancel(RemoteControlNotification.NOTIFICATION_ID)
+            renderUi()
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
+            return
+        }
+        prefs.edit().putBoolean(KEY_NOTIFICATION_PINNED, true).apply()
+        syncPinnedNotification()
+        renderUi()
+    }
+
+    private fun syncPinnedNotification() {
+        if (!prefs.getBoolean(KEY_NOTIFICATION_PINNED, false)) return
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        RemoteControlNotification.show(this, receiverMode)
+    }
+
+    @Deprecated("Use Activity Result APIs")
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQUEST_NOTIFICATIONS) return
+        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            prefs.edit().putBoolean(KEY_NOTIFICATION_PINNED, true).apply()
+            syncPinnedNotification()
+            renderUi()
+        } else {
+            updateStatus("Allow notifications to pin controls outside the app.", palette.danger)
+        }
+    }
+
     override fun onPause() {
         savePairingQuietly()
         super.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val storedMode = prefs.getString(KEY_READING_MODE, MODE_NORMAL) ?: MODE_NORMAL
+        if (storedMode != receiverMode) {
+            receiverMode = storedMode
+            readingMode = storedMode
+            renderUi()
+        }
+        syncPinnedNotification()
     }
 
     @Deprecated("Use the back gesture to return from connection settings")
@@ -883,7 +978,10 @@ class MainActivity : Activity() {
         private const val MODE_AUTOSCROLL = "autoscroll"
         private const val MODE_PARAGRAPH = "paragraph"
         private const val MODE_SPEED = "speed"
+        private const val MODE_TTS = "tts"
         private const val KEY_READING_MODE = "reading_mode"
+        private const val KEY_NOTIFICATION_PINNED = "notification_pinned"
+        private const val REQUEST_NOTIFICATIONS = 18766
         private const val KEY_HOST = "host"
         private const val KEY_PORT = "port"
         private const val KEY_SECRET = "secret_encrypted"
