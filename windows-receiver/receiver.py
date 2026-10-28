@@ -660,6 +660,67 @@ def startup_script_path():
     return os.path.join(startup_dir, "Readest Remote.vbs")
 
 
+def install_user_shortcuts():
+    """Create Desktop and Start menu shortcuts without an extra dependency."""
+    if getattr(sys, "frozen", False):
+        target = sys.executable
+        arguments = "--tray"
+        working_dir = os.path.dirname(sys.executable)
+        icon = sys.executable
+    else:
+        target = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        arguments = subprocess.list2cmdline([os.path.abspath(__file__), "--tray"])
+        working_dir = os.path.dirname(os.path.abspath(__file__))
+        icon = target
+
+    template = r'''Set shell = CreateObject("WScript.Shell")
+Set files = CreateObject("Scripting.FileSystemObject")
+desktop = shell.SpecialFolders("Desktop")
+programs = shell.SpecialFolders("Programs")
+group = programs & "\Readest Remote"
+If Not files.FolderExists(group) Then files.CreateFolder(group)
+CreateLink desktop & "\Readest Remote.lnk"
+CreateLink group & "\Readest Remote.lnk"
+Sub CreateLink(path)
+  Set link = shell.CreateShortcut(path)
+  link.TargetPath = "__TARGET__"
+  link.Arguments = "__ARGUMENTS__"
+  link.WorkingDirectory = "__WORKING_DIR__"
+  link.IconLocation = "__ICON__,0"
+  link.Description = "Open Readest Remote in the notification area"
+  link.Save
+End Sub
+'''
+    def quote_vbs(value):
+        return str(value).replace('"', '""')
+    script = (template.replace("__TARGET__", quote_vbs(target))
+              .replace("__ARGUMENTS__", quote_vbs(arguments))
+              .replace("__WORKING_DIR__", quote_vbs(working_dir))
+              .replace("__ICON__", quote_vbs(icon)))
+    script_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".vbs", encoding="utf-16", delete=False) as f:
+            f.write(script)
+            script_path = f.name
+        subprocess.run(["cscript.exe", "//B", "//NoLogo", script_path], check=True,
+                       timeout=10, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    finally:
+        if script_path and os.path.exists(script_path):
+            os.remove(script_path)
+    print("Created Readest Remote shortcuts on the Desktop and Start menu.")
+
+
+def remove_user_shortcuts():
+    desktop = os.path.join(os.path.expanduser("~"), "Desktop", "Readest Remote.lnk")
+    programs = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
+                            "Microsoft", "Windows", "Start Menu", "Programs", "Readest Remote")
+    for path in (desktop, os.path.join(programs, "Readest Remote.lnk")):
+        if os.path.isfile(path):
+            os.remove(path)
+    if os.path.isdir(programs) and not os.listdir(programs):
+        os.rmdir(programs)
+
+
 def install_startup():
     if os.name != "nt":
         raise SystemExit("Automatic startup is supported on Windows only.")
@@ -686,6 +747,7 @@ def install_startup():
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as file:
         file.write(script)
+    install_user_shortcuts()
     print(f"Installed per-user auto-start shortcut: {path}")
     print("The receiver will start in the notification area after your next sign-in.")
 
@@ -697,6 +759,7 @@ def remove_startup():
         print("Removed Readest Remote from Windows auto-start.")
     else:
         print("Readest Remote auto-start is not installed.")
+    remove_user_shortcuts()
 
 
 def tray_image():
@@ -715,9 +778,20 @@ def tray_image():
 def run_tray():
     if os.name != "nt":
         raise SystemExit("Tray mode is supported on Windows only.")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    mutex = kernel32.CreateMutexW(None, False, "Local\\ReadestRemoteReceiverTray")
+    if ctypes.get_last_error() == 183:
+        ctypes.windll.user32.MessageBoxW(None, "Readest Remote is already running in the notification area.",
+                                         "Readest Remote", 0x40)
+        kernel32.CloseHandle(mutex)
+        return
     try:
         import pystray
     except ImportError:
+        kernel32.CloseHandle(mutex)
         raise SystemExit("Tray mode needs dependencies. Run: py -m pip install -r requirements.txt")
 
     controller = ServerController()
@@ -869,6 +943,7 @@ def run_tray():
         icon.run()
     finally:
         controller.stop()
+        kernel32.CloseHandle(mutex)
 
 
 def run_console():

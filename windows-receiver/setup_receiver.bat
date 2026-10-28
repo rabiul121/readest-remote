@@ -8,7 +8,9 @@ if exist "%~dp0ReadestRemoteReceiver.exe" (
     tasklist /fi "imagename eq ReadestRemoteReceiver.exe" | find /i "ReadestRemoteReceiver.exe" >nul
     if errorlevel 1 start "" "%~dp0ReadestRemoteReceiver.exe" --tray
     echo.
-    echo Setup complete. Scan the pairing QR from the Readest Remote tray icon.
+    echo Setup complete. Readest Remote shortcuts are on the Desktop and Start menu.
+    echo Use either shortcut to reopen the receiver after choosing Exit in the tray.
+    echo Scan the pairing QR from the Readest Remote tray icon.
     pause
     exit /b 0
 )
@@ -28,7 +30,9 @@ if errorlevel 1 goto failed
 for /f "delims=" %%P in ('py -3 -c "import os,sys; print(os.path.join(os.path.dirname(sys.executable), 'pythonw.exe'))"') do set "PYTHONW=%%P"
 if not exist "%PYTHONW%" goto failed
 start "" "%PYTHONW%" "%~dp0receiver.py" --tray
-echo Setup complete. Scan the pairing QR from the tray icon.
+echo Setup complete. Readest Remote shortcuts are on the Desktop and Start menu.
+echo Use either shortcut to reopen the receiver after choosing Exit in the tray.
+echo Scan the pairing QR from the tray icon.
 pause
 exit /b 0
 :failed

@@ -12,10 +12,10 @@ A minimal Wi-Fi remote for turning pages in Readest on Windows. The Android app 
 ## 1. Install and start the Windows receiver
 
 1. Download and extract `ReadestRemote-Windows.zip` from the latest GitHub release.
-2. Double-click `setup_receiver.bat`. It installs a per-user startup shortcut and starts the tray receiver. No Python, pip, or hand-generated secret is needed.
+2. Double-click `setup_receiver.bat`. It installs a per-user startup shortcut, adds **Readest Remote** shortcuts to the Desktop and Start menu, and starts the tray receiver. No Python, pip, or hand-generated secret is needed.
 3. Allow the receiver through Windows Firewall on **Private networks only** when prompted. Keep the receiver on a trusted local network; do not expose port `18765` to the internet.
 
-Right-click the Readest Remote tray icon and choose **Show pairing QR**. The QR is short-lived: it contains the laptop address, a three-minute one-use pairing code, and the receiver certificate fingerprint. In Android Connection settings, tap **Scan secure pairing QR**. Each phone receives its own credential, stored encrypted by Android Keystore; the Windows receiver stores only a hash of that credential. Credentials travel over HTTPS with the receiver certificate pinned by the app. If the built-in scanner does not read the code, copy the full raw QR text from another scanner, paste it into the app, and tap **Use pasted QR data**.
+If you exit the tray app, reopen it with the Desktop shortcut or **Start → Readest Remote**. Right-click the Readest Remote tray icon and choose **Show pairing QR**. The QR is short-lived: it contains the laptop address, a three-minute one-use pairing code, and the receiver certificate fingerprint. In Android Connection settings, tap **Scan secure pairing QR**. Each phone receives its own credential, stored encrypted by Android Keystore; the Windows receiver stores only a hash of that credential. Credentials travel over HTTPS with the receiver certificate pinned by the app. If the built-in scanner does not read the code, copy the full raw QR text from another scanner, paste it into the app, and tap **Use pasted QR data**.
 
 If QR scanning is unavailable, use **Show IP for manual entry** in the tray. Enter the displayed IP, port, certificate SHA-256 fingerprint, and temporary pairing code in Android settings before the three-minute expiry. **Refresh IP address**, **Copy laptop IP**, and **Copy all IPv4 addresses** are also available. Address lookup happens only when requested; the tray does not poll in the background.
 

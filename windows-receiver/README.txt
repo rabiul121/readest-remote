@@ -2,7 +2,7 @@ Readest Remote Windows receiver
 
 1. Keep ReadestRemoteReceiver.exe and setup_receiver.bat in this folder.
 2. Double-click setup_receiver.bat. Approve Windows Firewall access on Private networks only.
-3. Right-click the Readest Remote tray icon and choose Show pairing QR.
+3. If you exit from the tray, reopen the receiver with the Desktop icon or Start > Readest Remote. Right-click its tray icon and choose Show pairing QR.
 4. On Android, open Connection settings and scan the QR. The code expires after three minutes and can be used once.
 
 The receiver stores its certificate/private key and paired-device hashes in:
