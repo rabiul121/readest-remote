@@ -34,9 +34,8 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONObject
-import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
-import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.zxing.integration.android.IntentIntegrator
+import android.content.Intent
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.KeyStore
@@ -828,24 +827,30 @@ class MainActivity : Activity() {
     }
 
     private fun scanPairingQr() {
-        val options = GmsBarcodeScannerOptions.Builder()
-            .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
-            .enableAutoZoom()
-            .build()
         try {
-            GmsBarcodeScanning.getClient(this, options).startScan()
-                .addOnSuccessListener(this) { barcode ->
-                    handlePairingQr(barcode.rawValue.orEmpty())
-                }
-                .addOnFailureListener(this) { error ->
-                    updateStatus("QR scanner unavailable. Enter the laptop IP manually. (${error.javaClass.simpleName})", palette.danger)
-                }
-                .addOnCanceledListener(this) {
-                    updateStatus("Scanning canceled. Try again or paste the QR text below.", palette.muted)
-                }
+            IntentIntegrator(this)
+                .setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
+                .setPrompt("Point the camera at the Readest Remote QR code")
+                .setBeepEnabled(false)
+                .setOrientationLocked(false)
+                .initiateScan()
         } catch (error: Exception) {
-            updateStatus("QR scanner unavailable. Enter the laptop IP manually. (${error.javaClass.simpleName})", palette.danger)
+            updateStatus("Could not start QR scanner (${error.javaClass.simpleName}). You can paste the QR text instead.", palette.danger)
         }
+    }
+
+    @Deprecated("Scanner library uses the legacy activity result API")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        val result = IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
+        if (result != null) {
+            if (result.contents.isNullOrBlank()) {
+                updateStatus("Scanner closed without decoded text. Try again or use Pair from clipboard.", palette.danger)
+            } else {
+                handlePairingQr(result.contents)
+            }
+            return
+        }
+        super.onActivityResult(requestCode, resultCode, data)
     }
 
     private fun handlePairingQr(rawValue: String) {
