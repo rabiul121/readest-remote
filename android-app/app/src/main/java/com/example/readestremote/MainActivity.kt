@@ -1,6 +1,5 @@
 package com.example.readestremote
 
-import android.app.Activity
 import android.app.NotificationManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
@@ -35,7 +34,10 @@ import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONObject
 import com.google.zxing.integration.android.IntentIntegrator
-import android.content.Intent
+import androidx.activity.ComponentActivity
+import androidx.activity.result.ActivityResultLauncher
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.KeyStore
@@ -46,7 +48,7 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
     private val executor = Executors.newSingleThreadExecutor()
     private val handler = Handler(Looper.getMainLooper())
     private val prefs by lazy { getSharedPreferences("remote_settings", MODE_PRIVATE) }
@@ -56,6 +58,7 @@ class MainActivity : Activity() {
     private lateinit var tokenInput: EditText
     private lateinit var fingerprintInput: EditText
     private lateinit var qrPayloadInput: EditText
+    private lateinit var qrScanLauncher: ActivityResultLauncher<ScanOptions>
     private lateinit var status: TextView
     private lateinit var statusDot: View
     private lateinit var saveButton: Button
@@ -114,6 +117,13 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        qrScanLauncher = registerForActivityResult(ScanContract()) { result ->
+            if (result.contents.isNullOrBlank()) {
+                updateStatus("Scanner closed without decoded text. Try again or use Pair from clipboard.", palette.danger)
+            } else {
+                handlePairingQr(result.contents)
+            }
+        }
         themeMode = prefs.getString(KEY_THEME_MODE, THEME_AUTO) ?: THEME_AUTO
         // Start with Normal selected in the remote UI. Keep the last successful
         // receiver mode separately so the next command can deactivate it.
@@ -828,29 +838,15 @@ class MainActivity : Activity() {
 
     private fun scanPairingQr() {
         try {
-            IntentIntegrator(this)
-                .setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
+            val options = ScanOptions()
+                .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
                 .setPrompt("Point the camera at the Readest Remote QR code")
                 .setBeepEnabled(false)
                 .setOrientationLocked(false)
-                .initiateScan()
+            qrScanLauncher.launch(options)
         } catch (error: Exception) {
             updateStatus("Could not start QR scanner (${error.javaClass.simpleName}). You can paste the QR text instead.", palette.danger)
         }
-    }
-
-    @Deprecated("Scanner library uses the legacy activity result API")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        val result = IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
-        if (result != null) {
-            if (result.contents.isNullOrBlank()) {
-                updateStatus("Scanner closed without decoded text. Try again or use Pair from clipboard.", palette.danger)
-            } else {
-                handlePairingQr(result.contents)
-            }
-            return
-        }
-        super.onActivityResult(requestCode, resultCode, data)
     }
 
     private fun handlePairingQr(rawValue: String) {
@@ -1040,7 +1036,7 @@ class MainActivity : Activity() {
     }
 
     @Deprecated("Use Activity Result APIs")
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode != REQUEST_NOTIFICATIONS) return
         if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {

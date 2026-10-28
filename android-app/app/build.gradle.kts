@@ -16,8 +16,8 @@ android {
         applicationId = "com.example.readestremote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20
-        versionName = "1.7.4"
+        versionCode = 21
+        versionName = "1.7.5"
     }
 
     buildTypes {
@@ -34,5 +34,6 @@ android {
 }
 
 dependencies {
+    implementation("androidx.activity:activity:1.10.1")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }

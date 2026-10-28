@@ -859,8 +859,10 @@ def run_tray():
             print(message)
 
     def revoke_all_devices(icon, _item):
+        # Tray callbacks run on a background thread. Force this confirmation
+        # dialog to the foreground so its buttons receive clicks immediately.
         answer = ctypes.windll.user32.MessageBoxW(
-            None, "This will disconnect every paired phone. Continue?", "Revoke paired phones", 0x24
+            None, "This will disconnect every paired phone. Continue?", "Revoke paired phones", 0x52024
         )
         if answer == 6:
             save_devices({})
