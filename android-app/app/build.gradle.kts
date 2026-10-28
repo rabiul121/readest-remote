@@ -16,8 +16,8 @@ android {
         applicationId = "com.example.readestremote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "1.7.0"
+        versionCode = 17
+        versionName = "1.7.1"
     }
 
     buildTypes {

@@ -55,6 +55,7 @@ class MainActivity : Activity() {
     private lateinit var portInput: EditText
     private lateinit var tokenInput: EditText
     private lateinit var fingerprintInput: EditText
+    private lateinit var qrPayloadInput: EditText
     private lateinit var status: TextView
     private lateinit var statusDot: View
     private lateinit var saveButton: Button
@@ -346,6 +347,16 @@ class MainActivity : Activity() {
         setupCard.addView(actionButton("▦  Scan secure pairing QR", "Scan the receiver QR to securely pair this phone", colors) {
             scanPairingQr()
         }, topMargin(8))
+        qrPayloadInput = field("Or paste the QR text from another scanner", colors).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            minLines = 2
+            maxLines = 3
+            gravity = Gravity.TOP or Gravity.START
+        }
+        setupCard.addView(qrPayloadInput, topMargin(8))
+        setupCard.addView(actionButton("Use pasted QR data", "Pair using QR text copied from another scanner", colors) {
+            handlePairingQr(qrPayloadInput.text.toString())
+        }, topMargin(6))
 
         fingerprintInput = field("Receiver certificate SHA-256 fingerprint", colors).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
@@ -806,42 +817,49 @@ class MainActivity : Activity() {
     private fun scanPairingQr() {
         val options = GmsBarcodeScannerOptions.Builder()
             .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+            .enableAutoZoom()
             .build()
         try {
             GmsBarcodeScanning.getClient(this, options).startScan()
                 .addOnSuccessListener(this) { barcode ->
-                    val rawValue = barcode.rawValue
-                    if (rawValue.isNullOrBlank()) {
-                        updateStatus("The QR code did not contain pairing information.", palette.danger)
-                        return@addOnSuccessListener
-                    }
-                    try {
-                        val pairing = JSONObject(rawValue)
-                        require(pairing.optString("type") == QR_TYPE) { "This is not a Readest Remote pairing QR." }
-                        require(pairing.optInt("version") == QR_VERSION) { "This pairing QR version is not supported." }
-                        val host = pairing.optString("host").trim()
-                        require(isIpv4Address(host)) { "The QR code does not contain a valid IPv4 address." }
-                        val port = pairing.optInt("port", DEFAULT_PORT.toInt())
-                        require(port in 1..65535) { "The QR code contains an invalid port." }
-                        val fingerprint = pairing.optString("fingerprint")
-                        val code = pairing.optString("pairing_code")
-                        require(fingerprint.matches(Regex("[0-9a-fA-F]{64}")) && code.isNotBlank()) { "QR is missing secure pairing data." }
-                        hostInput.setText(host)
-                        portInput.setText(port.toString())
-                        tokenInput.setText(code)
-                        fingerprintInput.setText(fingerprint.lowercase())
-                        scannedFingerprint = fingerprint.lowercase()
-                        scannedPairingCode = code
-                        savePairing(showMessage = true)
-                    } catch (error: Exception) {
-                        updateStatus(error.message ?: "Could not read pairing information.", palette.danger)
-                    }
+                    handlePairingQr(barcode.rawValue.orEmpty())
                 }
                 .addOnFailureListener(this) { error ->
                     updateStatus("QR scanner unavailable. Enter the laptop IP manually. (${error.javaClass.simpleName})", palette.danger)
                 }
+                .addOnCanceledListener(this) {
+                    updateStatus("Scanning canceled. Try again or paste the QR text below.", palette.muted)
+                }
         } catch (error: Exception) {
             updateStatus("QR scanner unavailable. Enter the laptop IP manually. (${error.javaClass.simpleName})", palette.danger)
+        }
+    }
+
+    private fun handlePairingQr(rawValue: String) {
+        if (rawValue.isBlank()) {
+            updateStatus("No QR text was received. Try scanning again or paste its contents.", palette.danger)
+            return
+        }
+        try {
+            val pairing = JSONObject(rawValue.trim())
+            require(pairing.optString("type") == QR_TYPE) { "This is not a Readest Remote pairing QR." }
+            require(pairing.optInt("version") == QR_VERSION) { "This QR is from an older receiver. Update the Windows receiver to v1.7.0 or newer." }
+            val host = pairing.optString("host").trim()
+            require(isIpv4Address(host)) { "The QR code does not contain a valid IPv4 address." }
+            val port = pairing.optInt("port", DEFAULT_PORT.toInt())
+            require(port in 1..65535) { "The QR code contains an invalid port." }
+            val fingerprint = pairing.optString("fingerprint")
+            val code = pairing.optString("pairing_code")
+            require(fingerprint.matches(Regex("[0-9a-fA-F]{64}")) && code.isNotBlank()) { "QR is missing secure pairing data." }
+            hostInput.setText(host)
+            portInput.setText(port.toString())
+            tokenInput.setText(code)
+            fingerprintInput.setText(fingerprint.lowercase())
+            scannedFingerprint = fingerprint.lowercase()
+            scannedPairingCode = code
+            savePairing(showMessage = true)
+        } catch (error: Exception) {
+            updateStatus(error.message ?: "Could not read pairing information.", palette.danger)
         }
     }
 
