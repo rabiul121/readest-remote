@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.NotificationManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.content.ClipboardManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -348,14 +349,26 @@ class MainActivity : Activity() {
             scanPairingQr()
         }, topMargin(8))
         qrPayloadInput = field("Or paste the QR text from another scanner", colors).apply {
+            setSingleLine(false)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             minLines = 2
             maxLines = 3
             gravity = Gravity.TOP or Gravity.START
         }
         setupCard.addView(qrPayloadInput, topMargin(8))
-        setupCard.addView(actionButton("Use pasted QR data", "Pair using QR text copied from another scanner", colors) {
-            handlePairingQr(qrPayloadInput.text.toString())
+        setupCard.addView(actionButton("Pair using pasted QR text", "Pair using raw QR text pasted into the box above", colors) {
+            val raw = qrPayloadInput.text.toString().trim()
+            if (raw.isBlank()) updateStatus("The QR text box is empty. Paste the full QR text into it first.", palette.danger)
+            else handlePairingQr(raw)
+        }, topMargin(6))
+        setupCard.addView(actionButton("Pair from clipboard", "Read and pair using QR text copied to the clipboard", colors) {
+            val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+            val raw = clipboard.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString()?.trim().orEmpty()
+            if (raw.isBlank()) updateStatus("Clipboard is empty. In the QR scanner, copy the full decoded text first.", palette.danger)
+            else {
+                qrPayloadInput.setText(raw)
+                handlePairingQr(raw)
+            }
         }, topMargin(6))
 
         fingerprintInput = field("Receiver certificate SHA-256 fingerprint", colors).apply {
@@ -837,7 +850,7 @@ class MainActivity : Activity() {
 
     private fun handlePairingQr(rawValue: String) {
         if (rawValue.isBlank()) {
-            updateStatus("No QR text was received. Try scanning again or paste its contents.", palette.danger)
+            updateStatus("No QR text was read. Paste the full decoded text from another scanner, or try again.", palette.danger)
             return
         }
         try {
