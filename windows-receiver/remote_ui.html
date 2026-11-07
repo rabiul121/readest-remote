@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Readest Remote</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#f3f6fa; --panel:#fff; --text:#19283b; --muted:#607187; --line:#ccd7e4; --accent:#2864ce; --on-accent:#fff; --soft:#e7eef8; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:var(--bg); color:var(--text); font:16px/1.35 system-ui,sans-serif; }
+    main { max-width:620px; margin:auto; padding:env(safe-area-inset-top) 18px env(safe-area-inset-bottom); }
+    header { display:flex; align-items:center; justify-content:space-between; padding:18px 0 12px; }
+    h1 { margin:0; font-size:22px; }
+    #connection { color:var(--muted); font-size:13px; }
+    .icon { width:46px; height:46px; border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--text); font-size:20px; }
+    nav { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:5px; margin:10px 0 22px; }
+    button,select { color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:10px; min-height:48px; font:inherit; }
+    button { padding:8px 10px; cursor:pointer; touch-action:manipulation; }
+    button:active { transform:scale(.98); }
+    nav button { min-height:56px; padding:5px 2px; font-size:12px; }
+    nav button[aria-pressed=true] { color:var(--on-accent); border-color:var(--accent); background:var(--accent); }
+    h2 { margin:0 0 10px; color:var(--muted); font-size:12px; font-weight:650; }
+    .row { display:flex; gap:8px; margin:8px 0; }
+    .row > button,.row > select { flex:1; min-width:0; }
+    .transport button { min-height:68px; font-size:19px; }
+    .transport button:nth-child(2) { flex:1.35; font-size:22px; }
+    .primary { color:var(--on-accent); background:var(--accent); border-color:var(--accent); }
+    .quiet { background:var(--soft); }
+    section[hidden], [hidden] { display:none !important; }
+    #settings { margin-top:12px; padding-top:12px; border-top:1px solid var(--line); }
+    #status { min-height:24px; padding:10px 2px 6px; color:var(--muted); font-size:13px; }
+    @media (prefers-color-scheme:dark) {
+      :root { --bg:#111a28; --panel:#1b283a; --text:#edf3fb; --muted:#afbdd0; --line:#3a4b63; --accent:#538fff; --on-accent:#071629; --soft:#26364b; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><h1>Readest Remote</h1><div id="connection">Connecting to receiver…</div></div>
+      <button class="icon" aria-label="Connection settings" title="Connection settings" onclick="Native.openSettings()">⚙</button>
+    </header>
+    <nav aria-label="Reading mode">
+      <button data-mode="normal">Normal</button><button data-mode="autoscroll">Auto</button>
+      <button data-mode="paragraph">Paragraph</button><button data-mode="speed">Speed</button><button data-mode="tts">TTS</button>
+    </nav>
+    <section id="normal" hidden>
+      <h2>TURN PAGES</h2>
+      <div class="row"><button onclick="send('previous')">Previous page</button><button onclick="send('next')">Next page</button></div>
+      <div class="row"><button onclick="send('previous_chapter')">Previous chapter</button><button onclick="send('next_chapter')">Next chapter</button></div>
+    </section>
+    <section id="autoscroll" hidden>
+      <h2>AUTO SCROLL</h2>
+      <div class="row"><button onclick="send('autoscroll_slower')">Slower</button><button class="primary" onclick="send('autoscroll_pause')">Pause / play</button><button onclick="send('autoscroll_faster')">Faster</button></div>
+      <div class="row"><button onclick="send('previous')">Previous page</button><button onclick="send('next')">Next page</button></div>
+    </section>
+    <section id="paragraph" hidden>
+      <h2>PARAGRAPH READING</h2>
+      <div class="row"><button onclick="send('paragraph_to_speed')">Start speed reading</button><button onclick="send('speed_to_normal')">Stop reading mode</button></div>
+    </section>
+    <section id="speed" hidden>
+      <h2>SPEED READING</h2>
+      <div class="row transport"><button onclick="send('rsvp_previous_word')">Previous</button><button class="primary" onclick="send('speed_pause')">Ⅱ / ▶</button><button onclick="send('rsvp_next_word')">Next</button></div>
+      <div class="row"><button onclick="send('rsvp_back_15')">−15 words</button><button onclick="send('rsvp_forward_15')">+15 words</button></div>
+      <div class="row"><button id="audio-toggle" onclick="toggleAudio()">Play audio</button><button id="speed-control" onclick="send('speed_slower')">Slower</button><button id="speed-faster" onclick="send('speed_faster')">Faster</button></div>
+      <div class="row" id="audio-rate-row" hidden>
+        <label for="audio-rate" style="align-self:center">Audio speed</label>
+        <select id="audio-rate" onchange="send('rsvp_audio_rate', {rate:Number(this.value)})"></select>
+      </div>
+      <button class="icon" aria-label="Speed Reading settings" title="Speed Reading settings" onclick="toggleSpeedSettings()">⚙</button>
+      <div id="settings" hidden>
+        <div class="row"><button onclick="send('rsvp_font_smaller')">A−</button><button onclick="send('rsvp_font_larger')">A+</button></div>
+      </div>
+    </section>
+    <section id="tts" hidden>
+      <h2>TEXT TO SPEECH</h2>
+      <div class="row"><button onclick="send('tts_previous')">Previous sentence</button><button class="primary" onclick="send('tts_pause')">Pause / play</button><button onclick="send('tts_next')">Next sentence</button></div>
+      <div class="row"><button onclick="send('tts_close')">Stop TTS</button></div>
+    </section>
+    <div class="row"><button onclick="send('fullscreen')">Full screen</button><button onclick="send('launch_readest')">Start Readest</button><button onclick="send('close_readest')">Close Readest</button></div>
+    <div id="status" role="status" aria-live="polite">Keep Readest focused on the laptop.</div>
+      <div class="row"><button onclick="send('theme')">Cycle theme</button><button onclick="send('font_smaller')">A−</button><button onclick="send('font_larger')">A+</button><button onclick="send('font_reset')">A0</button></div>
+  </main>
+  <script>
+    const modes=['normal','autoscroll','paragraph','speed','tts'];
+    let activeMode=Native.currentMode();
+    let audioActive=false;
+    let requestId=0;
+    const pending=new Map();
+    const statusNode=document.getElementById('status');
+    const rateSelect=document.getElementById('audio-rate');
+    for(let n=0.5;n<=3.001;n+=0.25){const rate=Number(n.toFixed(2));const option=document.createElement('option');option.value=String(rate);option.textContent=rate.toFixed(2)+'x';if(rate===1)option.selected=true;rateSelect.append(option);}
+    function render(){for(const mode of modes){document.getElementById(mode).hidden=mode!==activeMode;}for(const button of document.querySelectorAll('[data-mode]'))button.setAttribute('aria-pressed',String(button.dataset.mode===activeMode));}
+    function send(action,data={}){const id=String(++requestId);pending.set(id,{action,data});Native.command(action,JSON.stringify(data),id);statusNode.textContent='Sending '+action.replaceAll('_',' ')+'…';}
+    function onRemoteResult(id,action,success,message){const request=pending.get(id);pending.delete(id);if(!request)return;if(success){statusNode.textContent=message||'Command sent.';if(action==='set_mode'){activeMode=request.data.mode;render();}if(action==='rsvp_audio_toggle'){audioActive=!audioActive;document.getElementById('audio-toggle').textContent=audioActive?'Stop audio':'Play audio';document.getElementById('audio-rate-row').hidden=!audioActive;document.getElementById('speed-control').hidden=audioActive;document.getElementById('speed-faster').hidden=audioActive;}if(action==='rsvp_settings_toggle')document.getElementById('settings').hidden=!document.getElementById('settings').hidden;}else statusNode.textContent=message||'Command failed. Check that Readest is open and focused.';}
+    function toggleAudio(){send('rsvp_audio_toggle');}
+    function toggleSpeedSettings(){send('rsvp_settings_toggle');}
+    document.querySelectorAll('[data-mode]').forEach(button=>button.addEventListener('click',()=>{const requested=button.dataset.mode;const target=requested===activeMode&&requested!=='normal'?'normal':requested;send('set_mode',{from_mode:Native.receiverMode(),mode:target});}));
+    document.getElementById('connection').textContent='Connected to laptop receiver';render();
+  </script>
+</body>
+</html>

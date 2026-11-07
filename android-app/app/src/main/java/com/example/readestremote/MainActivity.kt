@@ -26,6 +26,10 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
@@ -60,6 +64,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var fingerprintInput: EditText
     private lateinit var qrPayloadInput: EditText
     private lateinit var qrScanLauncher: ActivityResultLauncher<ScanOptions>
+    private var remoteWebView: WebView? = null
     private lateinit var status: TextView
     private lateinit var statusDot: View
     private lateinit var saveButton: Button
@@ -150,6 +155,11 @@ class MainActivity : ComponentActivity() {
             window.decorView.systemUiVisibility = if (isLight(colors.background)) {
                 View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
             } else 0
+        }
+
+        if (!showSettings) {
+            renderRemoteUi(colors)
+            return
         }
 
         val content = LinearLayout(this).apply {
@@ -247,7 +257,7 @@ class MainActivity : ComponentActivity() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
             }
-            wordControls.addView(actionButton(",", "Previous word", colors) {
+            wordControls.addView(actionButton("Previous", "Previous word", colors) {
                 sendAction("rsvp_previous_word")
             }, LinearLayout.LayoutParams(0, dp(64), 1f).apply { marginEnd = dp(6) })
             wordControls.addView(actionButton("Ⅱ / ▶", "Play or pause speed reading", colors) {
@@ -256,7 +266,7 @@ class MainActivity : ComponentActivity() {
                 marginStart = dp(6)
                 marginEnd = dp(6)
             })
-            wordControls.addView(actionButton(".", "Next word", colors) {
+            wordControls.addView(actionButton("Next", "Next word", colors) {
                 sendAction("rsvp_next_word")
             }, LinearLayout.LayoutParams(0, dp(64), 1f).apply { marginStart = dp(6) })
             content.addView(wordControls, topMargin(22))
@@ -588,6 +598,122 @@ class MainActivity : ComponentActivity() {
         content.addView(setupCard, topMargin(8))
 
         setContentView(scroll)
+    }
+
+    private fun renderRemoteUi(colors: Palette) {
+        val details = connectionDetails() ?: return
+        disposeRemoteUi()
+        val webView = WebView(this).apply {
+            setBackgroundColor(colors.background)
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = false
+            settings.allowFileAccess = false
+            settings.allowContentAccess = false
+            addJavascriptInterface(RemoteControlBridge(), "Native")
+            webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = true
+            }
+        }
+        remoteWebView = webView
+        setContentView(webView)
+        executor.execute {
+            var conn: HttpURLConnection? = null
+            try {
+                val (host, port, fingerprint, token, deviceId) = details
+                conn = PinnedHttp.open(host, port, fingerprint, "/remote-ui").apply {
+                    requestMethod = "GET"
+                    connectTimeout = 4000
+                    readTimeout = 5000
+                    setRequestProperty("X-Device-Token", token)
+                    setRequestProperty("X-Device-Id", deviceId)
+                }
+                val code = conn.responseCode
+                if (code != 200) throw IllegalStateException("Receiver replied with HTTP $code")
+                val html = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                runOnUiThread {
+                    if (remoteWebView === webView) {
+                        webView.loadDataWithBaseURL(
+                            "https://$host:$port/remote-ui/",
+                            html,
+                            "text/html",
+                            "UTF-8",
+                            null,
+                        )
+                    }
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    if (remoteWebView === webView) {
+                        webView.loadDataWithBaseURL(
+                            null,
+                            "<html><body style='font:16px sans-serif;padding:24px'>Could not load controls. Check the receiver and restart it to update its control page.</body></html>",
+                            "text/html",
+                            "UTF-8",
+                            null,
+                        )
+                    }
+                }
+            } finally {
+                conn?.disconnect()
+            }
+        }
+    }
+
+    private inner class RemoteControlBridge {
+        @JavascriptInterface
+        fun currentMode(): String = readingMode
+
+        @JavascriptInterface
+        fun receiverMode(): String = receiverMode
+
+        @JavascriptInterface
+        fun openSettings() {
+            runOnUiThread {
+                disposeRemoteUi()
+                showSettings = true
+                renderUi()
+            }
+        }
+
+        @JavascriptInterface
+        fun command(action: String, payload: String, requestId: String) {
+            if (action.length > 64 || payload.length > 1024 || requestId.length > 32) return
+            val extraData = try {
+                JSONObject(payload)
+            } catch (_: Exception) {
+                JSONObject()
+            }
+            if (action == "set_mode") {
+                val target = extraData.optString("mode")
+                if (target !in setOf(MODE_NORMAL, MODE_AUTOSCROLL, MODE_PARAGRAPH, MODE_SPEED, MODE_TTS)) {
+                    return
+                }
+                extraData.put("from_mode", receiverMode).put("mode", target)
+            }
+            runOnUiThread {
+                sendAction(action, updateStatus = false, extraData = extraData) { succeeded ->
+                    if (succeeded && action == "set_mode") {
+                        readingMode = extraData.optString("mode", MODE_NORMAL)
+                        receiverMode = readingMode
+                        prefs.edit().putString(KEY_READING_MODE, receiverMode).apply()
+                        syncPinnedNotification()
+                    }
+                    val result = "window.onRemoteResult&&window.onRemoteResult(" +
+                        "${JSONObject.quote(requestId)},${JSONObject.quote(action)},$succeeded," +
+                        "${JSONObject.quote(if (succeeded) actionSuccess(action) else "Command failed. Check Readest and the receiver.")});"
+                    remoteWebView?.evaluateJavascript(result, null)
+                }
+            }
+        }
+    }
+
+    private fun disposeRemoteUi() {
+        remoteWebView?.apply {
+            stopLoading()
+            removeJavascriptInterface("Native")
+            destroy()
+        }
+        remoteWebView = null
     }
 
     private fun pageButton(
@@ -1236,6 +1362,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        disposeRemoteUi()
         executor.shutdownNow()
         super.onDestroy()
     }

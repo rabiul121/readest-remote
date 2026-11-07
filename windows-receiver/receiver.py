@@ -29,6 +29,8 @@ DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", tempfile.gettempdir()), "
 CERT_FILE = os.path.join(DATA_DIR, "receiver-cert.pem")
 KEY_FILE = os.path.join(DATA_DIR, "receiver-key.pem")
 DEVICES_FILE = os.path.join(DATA_DIR, "paired_devices.json")
+APP_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+REMOTE_UI_FILE = os.path.join(APP_DIR, "remote_ui.html")
 PAIR_LOCK = threading.Lock()
 PAIRING = {"code": None, "expires": 0.0, "attempts": 0}
 
@@ -371,8 +373,50 @@ def click_rsvp_audio():
     width_css = width / scale
     height_css = height / scale
     audio_x = 28 if width_css < 768 else max(20, width_css / 2 - 184)
-    audio_y = max(20, height_css - 44)
+    audio_y = max(20, height_css - 64)
     return click_readest_client(audio_x / width_css, audio_y / height_css)
+
+def click_rsvp_settings():
+    hwnd = user32.GetForegroundWindow()
+    if not foreground_is_readest(hwnd):
+        return False
+    rect = wintypes.RECT()
+    if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+        return False
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    if width <= 0 or height <= 0:
+        return False
+    scale = max(1.0, user32.GetDpiForWindow(hwnd) / 96.0)
+    width_css = width / scale
+    height_css = height / scale
+    return click_readest_client((width_css - 28) / width_css, (height_css - 64) / height_css)
+
+def click_rsvp_font(smaller):
+    hwnd = user32.GetForegroundWindow()
+    if not foreground_is_readest(hwnd):
+        return False
+    rect = wintypes.RECT()
+    if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+        return False
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    if width <= 0 or height <= 0:
+        return False
+    scale = max(1.0, user32.GetDpiForWindow(hwnd) / 96.0)
+    width_css = width / scale
+    height_css = height / scale
+    # RSVP's settings row puts the Font stepper after punctuation delay.
+    x_fraction = 0.33 if smaller else 0.36
+    y_fraction = (height_css - 45) / height_css
+    return click_readest_client(x_fraction, y_fraction)
+
+def press_modified_key(modifier, key):
+    user32.keybd_event(modifier, 0, 0, 0)
+    time.sleep(0.03)
+    press_key(key)
+    time.sleep(0.03)
+    user32.keybd_event(modifier, 0, KEYEVENTF_KEYUP, 0)
 
 def set_rsvp_audio_rate(rate):
     rates = (0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0)
@@ -514,13 +558,29 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path == "/health":
+        path = self.path.split("?", 1)[0]
+        if path == "/health":
             self.send_json(200, {"ok": True, "service": "Readest Remote"})
-        elif self.path == "/verify":
+        elif path == "/verify":
             if self.authorized():
                 self.send_json(200, {"ok": True, "service": "Readest Remote", "authenticated": True})
             else:
                 self.send_json(401, {"ok": False, "error": "Unauthorized"})
+        elif path == "/remote-ui":
+            if not self.authorized():
+                self.send_json(401, {"ok": False, "error": "Unauthorized"})
+                return
+            try:
+                body = Path(REMOTE_UI_FILE).read_bytes()
+            except OSError:
+                self.send_json(404, {"ok": False, "error": "Receiver control page is missing"})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
         else:
             self.send_json(404, {"ok": False, "error": "Not found"})
 
@@ -608,6 +668,18 @@ class Handler(BaseHTTPRequestHandler):
             press_chord(VK_CONTROL, VK_OEM_PLUS)
         elif action == "font_smaller":
             press_chord(VK_CONTROL, VK_OEM_MINUS)
+        elif action == "rsvp_settings_toggle":
+            if not click_rsvp_settings():
+                self.send_json(409, {"ok": False, "error": "Readest Speed Reading must be open and focused"})
+                return
+        elif action == "rsvp_font_smaller":
+            if not click_rsvp_font(smaller=True):
+                self.send_json(409, {"ok": False, "error": "Open Speed Reading settings on Readest before changing RSVP font size"})
+                return
+        elif action == "rsvp_font_larger":
+            if not click_rsvp_font(smaller=False):
+                self.send_json(409, {"ok": False, "error": "Open Speed Reading settings on Readest before changing RSVP font size"})
+                return
         elif action == "font_reset":
             press_chord(VK_CONTROL, 0x30)  # Ctrl+0 resets Readest zoom.
         elif action == "fullscreen":
@@ -674,9 +746,9 @@ class Handler(BaseHTTPRequestHandler):
         elif action == "rsvp_next_word":
             press_key(VK_OEM_PERIOD)
         elif action == "rsvp_back_15":
-            press_chord(VK_SHIFT, VK_LEFT)
+            press_modified_key(VK_SHIFT, VK_LEFT)
         elif action == "rsvp_forward_15":
-            press_chord(VK_SHIFT, VK_RIGHT)
+            press_modified_key(VK_SHIFT, VK_RIGHT)
         elif action == "rsvp_previous":
             speed_reading_navigation(VK_LEFT)
         elif action == "rsvp_next":
