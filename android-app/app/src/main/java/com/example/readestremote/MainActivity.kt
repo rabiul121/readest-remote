@@ -30,6 +30,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONObject
@@ -71,6 +72,9 @@ class MainActivity : ComponentActivity() {
     private var receiverMode = MODE_NORMAL
     private var modeRequestPending = false
     private var showSettings = false
+    private var speedSettingsExpanded = false
+    private var speedAudioEnabled = false
+    private var speedAudioRate = 1.0f
 
     private data class Palette(
         val background: Int,
@@ -196,16 +200,18 @@ class MainActivity : ComponentActivity() {
             setPadding(0, dp(3), 0, 0)
         }, matchWrap())
         topRow.addView(titleBlock, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        topRow.addView(iconButton(themeIcon(), themeDescription(), colors) {
-            themeMode = when (themeMode) {
-                THEME_AUTO -> THEME_LIGHT
-                THEME_LIGHT -> THEME_DARK
-                else -> THEME_AUTO
-            }
-            prefs.edit().putString(KEY_THEME_MODE, themeMode).apply()
-            renderUi()
-        }, LinearLayout.LayoutParams(dp(46), dp(46)).apply { marginStart = dp(4) })
-        if (!showSettings) {
+        if (readingMode != MODE_SPEED) {
+            topRow.addView(iconButton(themeIcon(), themeDescription(), colors) {
+                themeMode = when (themeMode) {
+                    THEME_AUTO -> THEME_LIGHT
+                    THEME_LIGHT -> THEME_DARK
+                    else -> THEME_AUTO
+                }
+                prefs.edit().putString(KEY_THEME_MODE, themeMode).apply()
+                renderUi()
+            }, LinearLayout.LayoutParams(dp(46), dp(46)).apply { marginStart = dp(4) })
+        }
+        if (!showSettings && readingMode != MODE_SPEED) {
             topRow.addView(iconButton(
                 if (prefs.getBoolean(KEY_NOTIFICATION_PINNED, false)) R.drawable.ic_pin_filled else R.drawable.ic_pin,
                 if (prefs.getBoolean(KEY_NOTIFICATION_PINNED, false)) "Unpin reading controls notification" else "Pin reading controls notification",
@@ -234,6 +240,121 @@ class MainActivity : ComponentActivity() {
             modeRow.addView(readingModeButton("Speed", MODE_SPEED, R.drawable.ic_mode_speed, colors), weightButton().apply { marginStart = dp(5) })
             modeRow.addView(readingModeButton("TTS", MODE_TTS, R.drawable.ic_mode_tts, colors), weightButton().apply { marginStart = dp(5) })
             content.addView(modeRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(64)).apply { topMargin = dp(5) })
+        }
+
+        if (!showSettings && readingMode == MODE_SPEED) {
+            val wordControls = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+            }
+            wordControls.addView(actionButton(",", "Previous word", colors) {
+                sendAction("rsvp_previous_word")
+            }, LinearLayout.LayoutParams(0, dp(64), 1f).apply { marginEnd = dp(6) })
+            wordControls.addView(actionButton("Ⅱ / ▶", "Play or pause speed reading", colors) {
+                sendAction("speed_pause")
+            }, LinearLayout.LayoutParams(0, dp(64), 1.4f).apply {
+                marginStart = dp(6)
+                marginEnd = dp(6)
+            })
+            wordControls.addView(actionButton(".", "Next word", colors) {
+                sendAction("rsvp_next_word")
+            }, LinearLayout.LayoutParams(0, dp(64), 1f).apply { marginStart = dp(6) })
+            content.addView(wordControls, topMargin(22))
+
+            val audioControls = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                val audioButton = iconButton(
+                    if (speedAudioEnabled) R.drawable.ic_audio_on else R.drawable.ic_audio_off,
+                    if (speedAudioEnabled) "Stop Readest audio" else "Play Readest audio from the current word",
+                    colors,
+                ) {
+                    sendAction("rsvp_audio_toggle") { succeeded ->
+                        if (succeeded) {
+                            speedAudioEnabled = !speedAudioEnabled
+                            renderUi()
+                        }
+                    }
+                }
+                addView(audioButton, LinearLayout.LayoutParams(dp(54), dp(54)).apply { marginEnd = dp(10) })
+                if (speedAudioEnabled) {
+                    lateinit var rateButton: Button
+                    rateButton = actionButton("Audio speed  ${"%.2f".format(java.util.Locale.US, speedAudioRate)}x", "Select audio speed from 0.50x to 3.00x", colors) {
+                        val rates = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.25f, 2.5f, 2.75f, 3f)
+                        PopupMenu(this@MainActivity, rateButton).apply {
+                            rates.forEachIndexed { index, rate ->
+                                menu.add(0, index, index, "${"%.2f".format(java.util.Locale.US, rate)}x")
+                            }
+                            setOnMenuItemClickListener { item ->
+                                val selectedRate = rates[item.itemId]
+                                sendAction(
+                                    "rsvp_audio_rate",
+                                    extraData = JSONObject().put("rate", selectedRate.toDouble()),
+                                ) { succeeded ->
+                                    if (succeeded) {
+                                        speedAudioRate = selectedRate
+                                        renderUi()
+                                    }
+                                }
+                                true
+                            }
+                            show()
+                        }
+                    }
+                    addView(rateButton, LinearLayout.LayoutParams(0, dp(54), 1f))
+                } else {
+                    addView(actionButton("Slower", "Decrease speed with Left or Down", colors) {
+                        sendAction("speed_slower")
+                    }, LinearLayout.LayoutParams(0, dp(54), 1f))
+                    addView(actionButton("Faster", "Increase speed with Right or Up", colors) {
+                        sendAction("speed_faster")
+                    }, LinearLayout.LayoutParams(0, dp(54), 1f).apply { marginStart = dp(8) })
+                }
+            }
+            content.addView(audioControls, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)).apply {
+                topMargin = dp(10)
+            })
+
+            val jumpControls = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                addView(actionButton("−15 words", "Jump back 15 words", colors) {
+                    sendAction("rsvp_back_15")
+                }, weightButton())
+                addView(actionButton("+15 words", "Jump forward 15 words", colors) {
+                    sendAction("rsvp_forward_15")
+                }, weightButton().apply { marginStart = dp(8) })
+            }
+            content.addView(jumpControls, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)).apply {
+                topMargin = dp(8)
+            })
+
+            val settingsToggle = iconButton(R.drawable.ic_settings, "Speed reading settings", colors) {
+                speedSettingsExpanded = !speedSettingsExpanded
+                renderUi()
+            }
+            content.addView(settingsToggle, LinearLayout.LayoutParams(dp(48), dp(48)).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                topMargin = dp(14)
+            })
+            if (speedSettingsExpanded) {
+                val fontControls = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER
+                    addView(actionButton("A−", "Decrease Readest font size", colors) {
+                        sendAction("font_smaller")
+                    }, weightButton())
+                    addView(actionButton("A+", "Increase Readest font size", colors) {
+                        sendAction("font_larger")
+                    }, weightButton().apply { marginStart = dp(8) })
+                }
+                content.addView(fontControls, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)).apply {
+                    topMargin = dp(6)
+                })
+            }
+            addStatusLine(content, colors, "Keep Readest focused on the laptop.")
+            setContentView(content)
+            return
         }
 
         if (!showSettings) {
@@ -286,14 +407,16 @@ class MainActivity : ComponentActivity() {
             })
 
             val laptopTheme = Button(this).apply {
-                text = "Cycle Readest theme"
+                text = "Cycle Readest\ntheme"
                 contentDescription = "Cycle Readest between Auto, Day, and Night theme modes"
                 isAllCaps = false
-                textSize = 15f
+                setSingleLine(false)
+                minLines = 2
+                maxLines = 2
+                gravity = Gravity.CENTER
+                textSize = 12f
                 setTextColor(colors.foreground)
                 backgroundTintList = ColorStateList.valueOf(colors.surface)
-                setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_theme_cycle, 0, 0, 0)
-                compoundDrawablePadding = dp(12)
                 setOnClickListener {
                     vibrate(this)
                     sendAction("theme")
@@ -335,6 +458,26 @@ class MainActivity : ComponentActivity() {
             }
             content.addView(appActions, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46)).apply {
                 topMargin = dp(8)
+            })
+            content.addView(sectionLabel("READEST DIALOG KEYS", colors), topMargin(14))
+            val dialogKeys = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                addView(actionButton("↑", "Move up in a Readest dialog", colors) {
+                    sendAction("key_up")
+                }, weightButton())
+                addView(actionButton("↓", "Move down in a Readest dialog", colors) {
+                    sendAction("key_down")
+                }, weightButton().apply { marginStart = dp(6) })
+                addView(actionButton("Enter", "Confirm the selected Readest dialog option", colors) {
+                    sendAction("key_enter")
+                }, weightButton().apply { marginStart = dp(6) })
+                addView(actionButton("Esc", "Close or cancel a Readest dialog", colors) {
+                    sendAction("key_escape")
+                }, weightButton().apply { marginStart = dp(6) })
+            }
+            content.addView(dialogKeys, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46)).apply {
+                topMargin = dp(6)
             })
             setContentView(content)
             return
@@ -955,12 +1098,22 @@ class MainActivity : ComponentActivity() {
         "autoscroll_faster" -> "Increasing Auto Scroll speed…"
         "speed_slower" -> "Reducing WPM…"
         "speed_faster" -> "Increasing WPM…"
+        "rsvp_previous_word" -> "Moving to the previous word…"
+        "rsvp_next_word" -> "Moving to the next word…"
+        "rsvp_back_15" -> "Jumping back 15 words…"
+        "rsvp_forward_15" -> "Jumping forward 15 words…"
+        "rsvp_audio_toggle" -> "Toggling Readest audio…"
+        "rsvp_audio_rate" -> "Changing Readest audio speed…"
         "font_smaller" -> "Decreasing Readest font size…"
         "font_larger" -> "Increasing Readest font size…"
         "font_reset" -> "Resetting Readest zoom…"
         "fullscreen" -> "Toggling Readest full screen…"
         "launch_readest" -> "Starting or focusing Readest…"
         "close_readest" -> "Closing Readest…"
+        "key_up" -> "Moving up in the Readest dialog…"
+        "key_down" -> "Moving down in the Readest dialog…"
+        "key_enter" -> "Confirming the Readest dialog selection…"
+        "key_escape" -> "Closing or cancelling the Readest dialog…"
         "autoscroll_pause", "speed_pause" -> "Toggling reading playback…"
         "rsvp_previous", "rsvp_next" -> "Turning page in speed reading…"
         "rsvp_previous_chapter", "rsvp_next_chapter" -> "Changing chapter in speed reading…"
@@ -981,12 +1134,19 @@ class MainActivity : ComponentActivity() {
         "next" -> "Next page command sent."
         "previous_chapter" -> "Previous chapter command sent."
         "next_chapter" -> "Next chapter command sent."
+        "rsvp_previous_word" -> "Previous word command sent."
+        "rsvp_next_word" -> "Next word command sent."
+        "rsvp_back_15" -> "15-word backward jump sent."
+        "rsvp_forward_15" -> "15-word forward jump sent."
+        "rsvp_audio_toggle" -> "Readest audio toggled."
+        "rsvp_audio_rate" -> "Readest audio speed changed."
         "font_smaller" -> "Readest font size decreased."
         "font_larger" -> "Readest font size increased."
         "font_reset" -> "Readest zoom reset."
         "fullscreen" -> "Readest full screen toggled."
         "launch_readest" -> "Readest opened or focused."
         "close_readest" -> "Readest close request sent."
+        "key_up", "key_down", "key_enter", "key_escape" -> "Readest dialog key sent."
         else -> "Readest theme mode cycled."
     }
 

@@ -156,6 +156,8 @@ VK_UP = 0x26
 VK_DOWN = 0x28
 VK_OEM_PLUS = 0xBB
 VK_OEM_MINUS = 0xBD
+VK_OEM_COMMA = 0xBC
+VK_OEM_PERIOD = 0xBE
 VK_P = 0x50
 VK_T = 0x54
 VK_Q = 0x51
@@ -166,6 +168,7 @@ VK_RETURN = 0x0D
 KEYEVENTF_KEYUP = 0x0002
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_WHEEL = 0x0800
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 SW_RESTORE = 9
 
@@ -193,6 +196,8 @@ user32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
 user32.ClientToScreen.restype = wintypes.BOOL
 user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
 user32.SetCursorPos.restype = wintypes.BOOL
+user32.GetDpiForWindow.argtypes = [wintypes.HWND]
+user32.GetDpiForWindow.restype = wintypes.UINT
 user32.mouse_event.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.c_size_t]
 user32.mouse_event.restype = None
 
@@ -350,6 +355,62 @@ def click_readest_client(x_fraction, y_fraction):
     user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
     user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
     return True
+
+def click_rsvp_audio():
+    hwnd = user32.GetForegroundWindow()
+    if not foreground_is_readest(hwnd):
+        return False
+    rect = wintypes.RECT()
+    if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+        return False
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    if width <= 0 or height <= 0:
+        return False
+    scale = max(1.0, user32.GetDpiForWindow(hwnd) / 96.0)
+    width_css = width / scale
+    height_css = height / scale
+    audio_x = 28 if width_css < 768 else max(20, width_css / 2 - 184)
+    audio_y = max(20, height_css - 44)
+    return click_readest_client(audio_x / width_css, audio_y / height_css)
+
+def set_rsvp_audio_rate(rate):
+    rates = (0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0)
+    try:
+        rate = float(rate)
+    except (TypeError, ValueError):
+        return False
+    if not any(abs(rate - supported) < 0.001 for supported in rates):
+        return False
+
+    hwnd = user32.GetForegroundWindow()
+    if not foreground_is_readest(hwnd):
+        return False
+    rect = wintypes.RECT()
+    if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+        return False
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    if width <= 0 or height <= 0:
+        return False
+    scale = max(1.0, user32.GetDpiForWindow(hwnd) / 96.0)
+    width_css = width / scale
+    height_css = height / scale
+
+    if not click_readest_client((width_css - 58) / width_css, 26 / height_css):
+        return False
+    time.sleep(0.15)
+    index = min(range(len(rates)), key=lambda candidate: abs(rates[candidate] - rate))
+    visible_index = index
+    if index > 7:
+        menu_y = min(height_css - 80, 180) / height_css
+        if not move_readest_cursor((width_css - 58) / width_css, menu_y):
+            return False
+        user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, -480, 0)
+        time.sleep(0.12)
+        visible_index = index - 3
+    option_y = (54 + (visible_index + 0.5) * 32) / height_css
+    return click_readest_client((width_css - 58) / width_css, option_y)
 
 def click_autoscroll_control(offset_from_center):
     # Readest's pill sits 24 CSS px above the reader area's bottom. Its center
@@ -533,6 +594,14 @@ class Handler(BaseHTTPRequestHandler):
             press_chord(VK_MENU, VK_LEFT)
         elif action == "next_chapter":
             press_chord(VK_MENU, VK_RIGHT)
+        elif action == "key_up":
+            press_key(VK_UP)
+        elif action == "key_down":
+            press_key(VK_DOWN)
+        elif action == "key_enter":
+            press_key(VK_RETURN)
+        elif action == "key_escape":
+            press_key(VK_ESCAPE)
         elif action == "theme":
             cycle_readest_theme()
         elif action == "font_larger":
@@ -589,9 +658,25 @@ class Handler(BaseHTTPRequestHandler):
         elif action == "speed_pause":
             press_key(0x20)  # Space toggles RSVP playback.
         elif action == "speed_slower":
-            press_key(VK_DOWN)
+            press_key(VK_LEFT)
         elif action == "speed_faster":
-            press_key(VK_UP)
+            press_key(VK_RIGHT)
+        elif action == "rsvp_audio_toggle":
+            if not click_rsvp_audio():
+                self.send_json(409, {"ok": False, "error": "Readest must be focused with Speed Reading open"})
+                return
+        elif action == "rsvp_audio_rate":
+            if not set_rsvp_audio_rate(data.get("rate")):
+                self.send_json(409, {"ok": False, "error": "Unsupported audio rate or Readest Speed Reading is not focused"})
+                return
+        elif action == "rsvp_previous_word":
+            press_key(VK_OEM_COMMA)
+        elif action == "rsvp_next_word":
+            press_key(VK_OEM_PERIOD)
+        elif action == "rsvp_back_15":
+            press_chord(VK_SHIFT, VK_LEFT)
+        elif action == "rsvp_forward_15":
+            press_chord(VK_SHIFT, VK_RIGHT)
         elif action == "rsvp_previous":
             speed_reading_navigation(VK_LEFT)
         elif action == "rsvp_next":
