@@ -390,7 +390,7 @@ def click_rsvp_settings():
     scale = max(1.0, user32.GetDpiForWindow(hwnd) / 96.0)
     width_css = width / scale
     height_css = height / scale
-    return click_readest_client((width_css - 28) / width_css, (height_css - 64) / height_css)
+    return click_readest_client((width_css - 30) / width_css, (height_css - 52) / height_css)
 
 def click_rsvp_font(smaller):
     hwnd = user32.GetForegroundWindow()
@@ -407,8 +407,8 @@ def click_rsvp_font(smaller):
     width_css = width / scale
     height_css = height / scale
     # RSVP's settings row puts the Font stepper after punctuation delay.
-    x_fraction = 0.33 if smaller else 0.36
-    y_fraction = (height_css - 45) / height_css
+    x_fraction = 0.48 if smaller else 0.54
+    y_fraction = (height_css - 38) / height_css
     return click_readest_client(x_fraction, y_fraction)
 
 def press_modified_key(modifier, key):

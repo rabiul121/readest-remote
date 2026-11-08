@@ -628,7 +628,14 @@ class MainActivity : ComponentActivity() {
                     setRequestProperty("X-Device-Id", deviceId)
                 }
                 val code = conn.responseCode
-                if (code != 200) throw IllegalStateException("Receiver replied with HTTP $code")
+                if (code != 200) {
+                    val detail = when (code) {
+                        401 -> "Pairing was rejected. Open connection settings and pair this phone again."
+                        404 -> "This Windows receiver is outdated and has no hosted control page. Install the latest Readest Remote Windows receiver ZIP and restart it."
+                        else -> "Receiver replied with HTTP $code. Check the Windows receiver and try again."
+                    }
+                    throw IllegalStateException(detail)
+                }
                 val html = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
                 runOnUiThread {
                     if (remoteWebView === webView) {
@@ -642,11 +649,12 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             } catch (error: Exception) {
+                val detail = android.text.Html.escapeHtml(error.message ?: "Check the receiver and network connection.")
                 runOnUiThread {
                     if (remoteWebView === webView) {
                         webView.loadDataWithBaseURL(
                             null,
-                            "<html><body style='font:16px sans-serif;padding:24px'>Could not load controls. Check the receiver and restart it to update its control page.</body></html>",
+                            "<html><meta name='viewport' content='width=device-width, initial-scale=1'><body style='font:16px sans-serif;padding:24px;line-height:1.5'><h2>Controls unavailable</h2><p>$detail</p><button style='min-height:48px;padding:0 18px;font:inherit' onclick='Native.openSettings()'>Open connection settings</button></body></html>",
                             "text/html",
                             "UTF-8",
                             null,
@@ -1230,6 +1238,9 @@ class MainActivity : ComponentActivity() {
         "rsvp_forward_15" -> "Jumping forward 15 words…"
         "rsvp_audio_toggle" -> "Toggling Readest audio…"
         "rsvp_audio_rate" -> "Changing Readest audio speed…"
+        "rsvp_settings_toggle" -> "Opening Readest Speed Reading settings…"
+        "rsvp_font_smaller" -> "Decreasing Speed Reading font size…"
+        "rsvp_font_larger" -> "Increasing Speed Reading font size…"
         "font_smaller" -> "Decreasing Readest font size…"
         "font_larger" -> "Increasing Readest font size…"
         "font_reset" -> "Resetting Readest zoom…"
@@ -1266,6 +1277,9 @@ class MainActivity : ComponentActivity() {
         "rsvp_forward_15" -> "15-word forward jump sent."
         "rsvp_audio_toggle" -> "Readest audio toggled."
         "rsvp_audio_rate" -> "Readest audio speed changed."
+        "rsvp_settings_toggle" -> "Speed Reading settings opened."
+        "rsvp_font_smaller" -> "Speed Reading font decreased."
+        "rsvp_font_larger" -> "Speed Reading font increased."
         "font_smaller" -> "Readest font size decreased."
         "font_larger" -> "Readest font size increased."
         "font_reset" -> "Readest zoom reset."
