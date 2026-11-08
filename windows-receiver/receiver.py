@@ -176,6 +176,7 @@ VK_F11 = 0x7A
 VK_OEM_4 = 0xDB
 VK_OEM_6 = 0xDD
 VK_RETURN = 0x0D
+KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_KEYUP = 0x0002
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
@@ -232,6 +233,14 @@ def press_chord(*vk_codes):
         user32.keybd_event(vk_code, 0, 0, 0)
     for vk_code in reversed(vk_codes):
         user32.keybd_event(vk_code, 0, KEYEVENTF_KEYUP, 0)
+
+def press_shift_arrow(vk_arrow):
+    # Arrow keys are "extended" keys; flag them so the browser sees a real
+    # ArrowLeft/ArrowRight (not Numpad4/6) while Shift is held.
+    user32.keybd_event(VK_SHIFT, 0, 0, 0)
+    user32.keybd_event(vk_arrow, 0, KEYEVENTF_EXTENDEDKEY, 0)
+    user32.keybd_event(vk_arrow, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
+    user32.keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, 0)
 
 def type_text(text):
     for char in text:
@@ -482,8 +491,21 @@ def click_rsvp_audio():
     scale = max(1.0, user32.GetDpiForWindow(hwnd) / 96.0)
     width_css = width / scale
     height_css = height / scale
-    audio_x = 60 if width_css < 768 else max(20, width_css / 2 - 260)
-    audio_y = max(20, height_css - 42)
+    # Readest's Speed Reading footer (RSVPOverlay.tsx):
+    #  - mobile (<768px): row has pb-6 (24px) and a 56px play button, so the
+    #    row's vertical centre is 52px above the bottom; the audio button is
+    #    the first item, 12px (px-3) + 16px in from the left edge.
+    #  - md+ (>=768px): pb-8 (32px) and a 64px play button -> centre is 64px
+    #    above the bottom; the control cluster is centred and the audio button
+    #    is its first item, about 218px left of centre.
+    if width_css < 768:
+        audio_x = 28
+        audio_y = height_css - 52
+    else:
+        audio_x = width_css / 2 - 218
+        audio_y = height_css - 64
+    audio_x = min(max(audio_x, 20), width_css - 20)
+    audio_y = min(max(audio_y, 20), height_css - 20)
     return click_readest_client(audio_x / width_css, audio_y / height_css)
 
 def click_rsvp_settings():
@@ -636,7 +658,8 @@ def set_reading_mode(previous_mode, target_mode):
         press_key(VK_ESCAPE)
         time.sleep(0.25)
     elif previous_mode == "tts":
-        time.sleep(0.2)
+        press_key(VK_T)  # T toggles Readest TTS; leaving the mode stops it.
+        time.sleep(0.25)
 
     if target_mode == "autoscroll":
         # Auto Scroll is only active in scrolled layout.
@@ -883,13 +906,11 @@ class Handler(BaseHTTPRequestHandler):
         elif action == "rsvp_next_word":
             press_key(VK_OEM_PERIOD)
         elif action == "rsvp_back_15":
-            press_key(VK_ESCAPE)
-            time.sleep(0.18)
-            press_chord(VK_SHIFT, VK_LEFT)
+            # Speed Reading handles Shift+Left itself (skip back 15 words).
+            # Do NOT press Escape first: that closes the overlay.
+            press_shift_arrow(VK_LEFT)
         elif action == "rsvp_forward_15":
-            press_key(VK_ESCAPE)
-            time.sleep(0.18)
-            press_chord(VK_SHIFT, VK_RIGHT)
+            press_shift_arrow(VK_RIGHT)
         elif action == "rsvp_previous":
             speed_reading_navigation(VK_LEFT)
         elif action == "rsvp_next":
