@@ -212,6 +212,30 @@ user32.GetDpiForWindow.argtypes = [wintypes.HWND]
 user32.GetDpiForWindow.restype = wintypes.UINT
 user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
 user32.GetAncestor.restype = wintypes.HWND
+user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+
+def physical_pixels(func):
+    """Run func with per-monitor DPI awareness on this thread.
+
+    The receiver process is DPI-unaware, so Windows hands it already-scaled
+    window sizes. The RSVP helpers divide by the DPI scale themselves, which
+    only works when they see real pixels (e.g. 1920x1080 at 125%, not 1536x864).
+    """
+    def wrapper(*args, **kwargs):
+        previous = None
+        try:
+            previous = user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))  # PER_MONITOR_AWARE_V2
+        except (AttributeError, OSError):
+            pass
+        try:
+            return func(*args, **kwargs)
+        finally:
+            if previous:
+                user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(previous))
+    wrapper.__name__ = func.__name__
+    return wrapper
+
 user32.mouse_event.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.c_size_t]
 user32.mouse_event.restype = None
 
@@ -477,6 +501,7 @@ def click_readest_client(x_fraction, y_fraction):
     user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
     return True
 
+@physical_pixels
 def click_rsvp_audio():
     hwnd = ensure_readest_focus()
     if not hwnd:
@@ -497,17 +522,18 @@ def click_rsvp_audio():
     #    the first item, 12px (px-3) + 16px in from the left edge.
     #  - md+ (>=768px): pb-8 (32px) and a 64px play button -> centre is 64px
     #    above the bottom; the control cluster is centred and the audio button
-    #    is its first item, about 218px left of centre.
+    #    is its first item, about 209px left of centre (measured).
     if width_css < 768:
         audio_x = 28
         audio_y = height_css - 52
     else:
-        audio_x = width_css / 2 - 218
+        audio_x = width_css / 2 - 209
         audio_y = height_css - 64
     audio_x = min(max(audio_x, 20), width_css - 20)
     audio_y = min(max(audio_y, 20), height_css - 20)
     return click_readest_client(audio_x / width_css, audio_y / height_css)
 
+@physical_pixels
 def click_rsvp_settings():
     hwnd = ensure_readest_focus()
     if not hwnd:
@@ -523,10 +549,13 @@ def click_rsvp_settings():
     width_css = width / scale
     height_css = height / scale
     # The RSVP transport row is centered; its gear is about 255 CSS px after center.
-    gear_x = min(width_css - 22, width_css * 0.5 + 255)
-    gear_y = max(20, height_css - 42)
+    # Measured on a real window: gear centre is 207 CSS px right of centre and
+    # 64 CSS px above the bottom edge (same row as the audio button).
+    gear_x = min(width_css - 22, width_css * 0.5 + 207)
+    gear_y = max(20, height_css - 64)
     return click_readest_client(gear_x / width_css, gear_y / height_css)
 
+@physical_pixels
 def click_rsvp_font(smaller):
     hwnd = ensure_readest_focus()
     if not hwnd:
@@ -554,6 +583,7 @@ def press_modified_key(modifier, key):
     user32.keybd_event(modifier, 0, KEYEVENTF_KEYUP, 0)
     user32.keybd_event(modifier, 0, KEYEVENTF_KEYUP, 0)
 
+@physical_pixels
 def set_rsvp_audio_rate(rate):
     rates = (0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0)
     try:
@@ -577,26 +607,32 @@ def set_rsvp_audio_rate(rate):
     width_css = width / scale
     height_css = height / scale
 
-    # Audio pace is the compact selector in RSVP's upper-left header, separate
-    # from the speaker button in the transport row.
-    rate_x = min(90, width_css - 20)
-    if not click_readest_client(rate_x / width_css, min(26, height_css - 12) / height_css):
+    # While audio plays, Readest's Speed Reading header shows an "Audio pace"
+    # button at the RIGHT end of the header (RSVPOverlay.tsx). Its dropdown
+    # opens below it, right-aligned, with 11 rows of 32 CSS px and a 256 px
+    # max height (8 rows visible; the rest scroll).
+    if width_css < 768:   # px-3 / py-2 header
+        pad_right, button_y, first_row_y = 12, 26, 66
+    else:                 # md: px-5 / py-3 header
+        pad_right, button_y, first_row_y = 20, 30, 70
+    row_height = 32
+    button_x = width_css - pad_right - 70
+    menu_x = width_css - pad_right - 50
+
+    if not click_readest_client(button_x / width_css, button_y / height_css):
         return False
-    time.sleep(0.15)
+    time.sleep(0.3)
     index = min(range(len(rates)), key=lambda candidate: abs(rates[candidate] - rate))
-    # The popup rows are 40 CSS px tall; the menu shows eight rows at a time.
-    visible_index = index
+    scrolled = 0
     if index > 7:
-        menu_y = 0.18
-        menu_x = min(110, width_css - 12) / width_css
-        if not move_readest_cursor(menu_x, menu_y):
+        # Scroll the list to its end (a fixed, known position), then pick.
+        if not move_readest_cursor(menu_x / width_css, (first_row_y + 3 * row_height) / height_css):
             return False
-        user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, -480, 0)
-        time.sleep(0.12)
-        visible_index = index - 4
-    menu_x = min(110, width_css - 12) / width_css
-    option_y = (74 + visible_index * 40) / height_css
-    return click_readest_client(menu_x, option_y)
+        user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, (-1200) & 0xFFFFFFFF, 0)
+        time.sleep(0.5)
+        scrolled = 98  # 11 rows (352px) minus the 254px visible area
+    option_y = first_row_y + index * row_height - scrolled
+    return click_readest_client(menu_x / width_css, option_y / height_css)
 
 def click_autoscroll_control(offset_from_center):
     # Readest's pill sits 24 CSS px above the reader area's bottom. Its center
