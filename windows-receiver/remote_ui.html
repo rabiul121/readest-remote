@@ -36,6 +36,12 @@
     .topbar-copy { min-width: 0; flex: 1; }
     h1 { margin: 0; font-size: 20px; font-weight: 600; }
     .connection { margin-top: 2px; color: var(--muted); font-size: 12px; }
+    .mode-tabs { display:flex; gap:4px; overflow-x:auto; scrollbar-width:none; padding:4px 0 10px; border-bottom:1px solid var(--outline-soft); }
+    .mode-tabs::-webkit-scrollbar { display:none; }
+    .mode-tab { flex:1 0 52px; min-width:52px; min-height:58px; padding:6px 4px; border:0; border-radius:14px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; background:transparent; color:var(--muted); }
+    .mode-tab svg { width:21px; height:21px; }
+    .mode-tab span { font-size:10px; line-height:1.1; white-space:nowrap; }
+    .mode-tab[aria-current="page"] { background:var(--primary-container); color:var(--on-primary-container); }
     .icon-button { width: 48px; height: 48px; padding: 12px; border: 0; border-radius: 50%; display: grid; place-items: center; background: transparent; }
     .icon-button:hover { background: var(--surface-container); }
     .icon-button svg { width: 24px; height: 24px; }
@@ -47,9 +53,11 @@
     .mode-card svg { width: 28px; height: 28px; flex: none; }
     .mode-card span { font-size: 16px; font-weight: 600; }
     .action-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    .action-card { min-height: 74px; padding: 12px 16px; border: 1px solid var(--outline-soft); border-radius: var(--radius); display: flex; align-items: center; justify-content: flex-start; gap: 14px; background: var(--surface); }
+    .row { display: flex; flex-wrap: wrap; gap: 10px; }
+    .row > * { flex: 1 1 180px; }
+    .action-card { min-width: 0; min-height: 74px; padding: 12px 12px; border: 1px solid var(--outline-soft); border-radius: var(--radius); display: flex; align-items: center; justify-content: flex-start; gap: 10px; background: var(--surface); }
     .action-card svg { width: 24px; height: 24px; flex: none; color: var(--primary); }
-    .action-card span { font-size: 14px; font-weight: 500; }
+    .action-card span { min-width:0; overflow-wrap:anywhere; font-size: 14px; font-weight: 500; }
     .filled { color: var(--on-primary); border-color: var(--primary); background: var(--primary); }
     .filled svg { color: var(--on-primary); }
     .tonal { color: var(--on-primary-container); border: 0; background: var(--primary-container); }
@@ -63,12 +71,13 @@
     .speed-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .speed-row button { min-height: 54px; border: 0; border-radius: 18px; display: flex; align-items: center; justify-content: center; gap: 9px; background: var(--surface-container); font-size: 14px; font-weight: 600; }
     .speed-row svg { width: 22px; height: 22px; }
-    .jump-row { display: grid; grid-template-columns: 1fr 1fr 48px; gap: 8px; align-items: center; }
+    .jump-row { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) 48px; gap: 8px; align-items: center; }
     .jump { min-height: 52px; border: 0; border-radius: 18px; display: flex; align-items: center; justify-content: center; gap: 7px; background: var(--surface-container); font-size: 14px; font-weight: 600; }
     .jump svg { width: 21px; height: 21px; }
     .settings-gear { width: 48px; height: 48px; background: var(--surface-high); }
     .settings-gear[aria-expanded="true"] { background: var(--primary-container); color: var(--on-primary-container); }
-    .audio-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: center; }
+    .audio-row { display: grid; grid-template-columns: minmax(0,1fr); gap: 10px; align-items: center; }
+    .audio-row.audio-active { grid-template-columns: minmax(0,1fr) minmax(0,1fr); }
     .audio-toggle, .audio-rate { min-height: 52px; border: 1px solid var(--outline-soft); border-radius: 16px; background: var(--surface); }
     .audio-toggle { display: flex; justify-content: center; align-items: center; gap: 9px; }
     .audio-toggle svg { width: 22px; height: 22px; }
@@ -116,6 +125,14 @@
       <div class="topbar-copy"><h1 id="title">Readest Remote</h1><div id="connection" class="connection">Connecting to receiver…</div></div>
       <button class="icon-button" aria-label="Connection settings" title="Connection settings" onclick="Native.openSettings()"><svg><use href="#i-gear"/></svg></button>
     </header>
+    <nav id="mode-tabs" class="mode-tabs" aria-label="Control pages">
+      <button class="mode-tab" data-page="home" aria-label="Home" onclick="showHome()"><svg><use href="#i-home"/></svg><span>Home</span></button>
+      <button class="mode-tab" data-page="normal" onclick="openMode('normal')"><svg><use href="#i-book"/></svg><span>Normal</span></button>
+      <button class="mode-tab" data-page="autoscroll" onclick="openMode('autoscroll')"><svg><use href="#i-scroll"/></svg><span>Auto</span></button>
+      <button class="mode-tab" data-page="paragraph" onclick="openMode('paragraph')"><svg><use href="#i-paragraph"/></svg><span>Paragraph</span></button>
+      <button class="mode-tab" data-page="speed" onclick="openMode('speed')"><svg><use href="#i-speed"/></svg><span>Speed</span></button>
+      <button class="mode-tab" data-page="tts" onclick="openMode('tts')"><svg><use href="#i-voice"/></svg><span>TTS</span></button>
+    </nav>
     <div id="home" class="page">
       <section>
         <h2 class="section-heading">READEST</h2>
@@ -126,14 +143,9 @@
         <div class="row" style="margin-top:12px"><button class="action-card" onclick="send('theme')"><svg><use href="#i-theme"/></svg><span>Cycle Readest theme</span></button></div>
       </section>
       <section>
-        <h2 class="section-heading">READING MODE</h2>
-        <div class="mode-grid">
-          <button class="mode-card" onclick="openMode('normal')"><svg><use href="#i-book"/></svg><span>Normal</span></button>
-          <button class="mode-card" onclick="openMode('autoscroll')"><svg><use href="#i-scroll"/></svg><span>Auto Scroll</span></button>
-          <button class="mode-card" onclick="openMode('paragraph')"><svg><use href="#i-paragraph"/></svg><span>Paragraph</span></button>
-          <button class="mode-card" onclick="openMode('speed')"><svg><use href="#i-speed"/></svg><span>Speed Reading</span></button>
-          <button class="mode-card" onclick="openMode('tts')"><svg><use href="#i-voice"/></svg><span>Text to Speech</span></button>
-        </div>
+        <h2 class="section-heading">READEST FONT</h2>
+        <div class="speed-row"><button onclick="send('font_smaller')"><svg><use href="#i-minus"/></svg>Smaller</button><button onclick="send('font_larger')"><svg><use href="#i-plus"/></svg>Larger</button></div>
+        <div class="row"><button class="action-card" onclick="send('font_reset')"><svg><use href="#i-theme"/></svg><span>Reset zoom</span></button></div>
       </section>
     </div>
     <div id="mode-page" class="page" hidden></div>
@@ -143,8 +155,8 @@
     const modes={
       normal:{title:'Normal',html:`<section><h2 class="section-heading">TURN PAGES</h2><div class="action-grid"><button class="action-card" onclick="send('previous')"><svg><use href="#i-prev"/></svg><span>Previous page</span></button><button class="action-card" onclick="send('next')"><svg><use href="#i-next"/></svg><span>Next page</span></button><button class="action-card" onclick="send('previous_chapter')"><svg><use href="#i-skip-back"/></svg><span>Previous chapter</span></button><button class="action-card" onclick="send('next_chapter')"><svg><use href="#i-skip-next"/></svg><span>Next chapter</span></button></div></section>`},
       autoscroll:{title:'Auto Scroll',html:`<section><h2 class="section-heading">AUTO SCROLL</h2><div class="speed-row"><button onclick="send('autoscroll_slower')"><svg><use href="#i-minus"/></svg>Slower</button><button onclick="send('autoscroll_faster')"><svg><use href="#i-plus"/></svg>Faster</button></div><div class="row"><button class="action-card filled" onclick="send('autoscroll_pause')"><svg><use href="#i-pause"/></svg><span>Pause / play</span></button></div><div class="action-grid"><button class="action-card" onclick="send('previous')"><svg><use href="#i-prev"/></svg><span>Previous page</span></button><button class="action-card" onclick="send('next')"><svg><use href="#i-next"/></svg><span>Next page</span></button></div></section>`},
-      paragraph:{title:'Paragraph Reading',html:`<section><h2 class="section-heading">PARAGRAPH READING</h2><div class="action-grid"><button class="action-card filled" onclick="send('paragraph_to_speed')"><svg><use href="#i-speed"/></svg><span>Start Speed Reading</span></button><button class="action-card" onclick="send('speed_to_normal')"><svg><use href="#i-back"/></svg><span>Exit Paragraph</span></button></div></section>`},
-      speed:{title:'Speed Reading',html:`<section><h2 class="section-heading">SPEED READING</h2><div class="transport-row"><button class="transport" onclick="send('rsvp_previous_word')"><svg><use href="#i-prev"/></svg><span>Previous</span></button><button class="transport play" onclick="send('speed_pause')"><svg><use href="#i-play"/></svg><span>Play / pause</span></button><button class="transport" onclick="send('rsvp_next_word')"><svg><use href="#i-next"/></svg><span>Next</span></button></div><div class="jump-row"><button class="jump" onclick="send('rsvp_back_15')"><svg><use href="#i-skip-back"/></svg><span>15 words</span></button><button class="jump" onclick="send('rsvp_forward_15')"><svg><use href="#i-skip-next"/></svg><span>15 words</span></button><button id="rsvp-gear" class="icon-button settings-gear" aria-label="Speed Reading settings" title="Font size" aria-expanded="false" onclick="toggleSpeedSettings()"><svg><use href="#i-gear"/></svg></button></div><div id="settings" class="settings-panel" hidden><div class="section-heading">FONT SIZE</div><div class="font-row"><button class="font-button" onclick="send('rsvp_font_smaller')"><svg><use href="#i-minus"/></svg><span>A− Smaller</span></button><button class="font-button" onclick="send('rsvp_font_larger')"><svg><use href="#i-plus"/></svg><span>A+ Larger</span></button></div></div><div class="audio-row"><button id="audio-toggle" class="audio-toggle" aria-pressed="false" onclick="toggleAudio()"><svg><use href="#i-sound"/></svg><span>Play audio</span></button><select id="audio-rate" class="audio-rate" aria-label="Audio speed" hidden onchange="send('rsvp_audio_rate',{rate:Number(this.value)})"></select></div><div id="wpm-controls" class="speed-row"><button onclick="send('speed_slower')"><svg><use href="#i-minus"/></svg>Slower</button><button onclick="send('speed_faster')"><svg><use href="#i-plus"/></svg>Faster</button></div></section>`},
+      paragraph:{title:'Paragraph Reading',html:`<section><h2 class="section-heading">PARAGRAPH READING</h2><div class="action-grid"><button class="action-card" onclick="send('paragraph_previous')"><svg><use href="#i-prev"/></svg><span>Previous paragraph</span></button><button class="action-card" onclick="send('paragraph_next')"><svg><use href="#i-next"/></svg><span>Next paragraph</span></button></div><div class="action-grid" style="margin-top:12px"><button class="action-card filled" onclick="send('paragraph_to_speed')"><svg><use href="#i-speed"/></svg><span>Start Speed Reading</span></button><button class="action-card" onclick="send('speed_to_normal')"><svg><use href="#i-back"/></svg><span>Exit Paragraph</span></button></div></section>`},
+      speed:{title:'Speed Reading',html:`<section><h2 class="section-heading">SPEED READING</h2><div class="transport-row"><button class="transport" onclick="send('rsvp_previous_word')"><svg><use href="#i-prev"/></svg><span>Previous</span></button><button class="transport play" onclick="send('speed_pause')"><svg><use href="#i-play"/></svg><span>Play / pause</span></button><button class="transport" onclick="send('rsvp_next_word')"><svg><use href="#i-next"/></svg><span>Next</span></button></div><div class="jump-row"><button class="jump" onclick="send('rsvp_back_15')"><svg><use href="#i-skip-back"/></svg><span>15 words</span></button><button class="jump" onclick="send('rsvp_forward_15')"><svg><use href="#i-skip-next"/></svg><span>15 words</span></button><button id="rsvp-gear" class="icon-button settings-gear" aria-label="Speed Reading settings" title="Font size" aria-expanded="false" onclick="toggleSpeedSettings()"><svg><use href="#i-gear"/></svg></button></div><div id="settings" class="settings-panel" hidden><div class="section-heading">FONT SIZE</div><div class="font-row"><button class="font-button" onclick="send('rsvp_font_smaller')"><svg><use href="#i-minus"/></svg><span>A− Smaller</span></button><button class="font-button" onclick="send('rsvp_font_larger')"><svg><use href="#i-plus"/></svg><span>A+ Larger</span></button></div></div><div id="audio-row" class="audio-row"><button id="audio-toggle" class="audio-toggle" aria-pressed="false" onclick="toggleAudio()"><svg><use href="#i-sound"/></svg><span>Play audio</span></button><select id="audio-rate" class="audio-rate" aria-label="Audio speed" hidden onchange="send('rsvp_audio_rate',{rate:Number(this.value)})"></select></div><div id="wpm-controls" class="speed-row"><button onclick="send('speed_slower')"><svg><use href="#i-minus"/></svg>Slower</button><button onclick="send('speed_faster')"><svg><use href="#i-plus"/></svg>Faster</button></div></section>`},
       tts:{title:'Text to Speech',html:`<section><h2 class="section-heading">TEXT TO SPEECH</h2><div class="action-grid"><button class="action-card" onclick="send('tts_previous')"><svg><use href="#i-prev"/></svg><span>Previous sentence</span></button><button class="action-card" onclick="send('tts_next')"><svg><use href="#i-next"/></svg><span>Next sentence</span></button></div><div class="row"><button class="action-card filled" onclick="send('tts_pause')"><svg><use href="#i-play"/></svg><span>Pause / play</span></button><button class="action-card" onclick="send('tts_close')"><svg><use href="#i-close"/></svg><span>Stop TTS</span></button></div></section>`}
     };
     let activeMode=Native.currentMode();
@@ -155,14 +167,15 @@
     const modePage=document.getElementById('mode-page');
     const homePage=document.getElementById('home');
     const rateSelectId='audio-rate';
-    function renderHome(){document.getElementById('title').textContent='Readest Remote';document.getElementById('back').hidden=true;homePage.hidden=false;modePage.hidden=true;modePage.replaceChildren();}
+    function renderTabs(page){for(const tab of document.querySelectorAll('[data-page]')){if(tab.dataset.page===page)tab.setAttribute('aria-current','page');else tab.removeAttribute('aria-current');}}
+    function renderHome(){document.getElementById('title').textContent='Readest Remote';document.getElementById('back').hidden=true;homePage.hidden=false;modePage.hidden=true;modePage.replaceChildren();renderTabs('home');}
     function openMode(mode){const requested=modes[mode]?mode:'normal';const receiverMode=Native.receiverMode();const target=requested===receiverMode&&requested!=='normal'?'normal':requested;if(target!==receiverMode)send('set_mode',{from_mode:receiverMode,mode:target},()=>{activeMode=target;showMode(target);});else{activeMode=target;showMode(target);}}
-    function showMode(mode){activeMode=mode;homePage.hidden=true;modePage.hidden=false;document.getElementById('back').hidden=false;document.getElementById('title').textContent=modes[mode].title;modePage.innerHTML=modes[mode].html;if(mode==='speed'){const select=document.getElementById(rateSelectId);for(let n=.5;n<=3.001;n+=.25){const rate=Number(n.toFixed(2));const option=document.createElement('option');option.value=String(rate);option.textContent=rate.toFixed(2)+'×';if(rate===1)option.selected=true;select.append(option);}syncAudioState();}}
+    function showMode(mode){activeMode=mode;homePage.hidden=true;modePage.hidden=false;document.getElementById('back').hidden=true;document.getElementById('title').textContent=modes[mode].title;modePage.innerHTML=modes[mode].html;renderTabs(mode);if(mode==='speed'){const select=document.getElementById(rateSelectId);for(let n=.5;n<=3.001;n+=.25){const rate=Number(n.toFixed(2));const option=document.createElement('option');option.value=String(rate);option.textContent=rate.toFixed(2)+'×';if(rate===1)option.selected=true;select.append(option);}syncAudioState();}}
     function showHome(){renderHome();}
     function send(action,data={},afterSuccess=null){const id=String(++requestId);pending.set(id,{action,data,afterSuccess});Native.command(action,JSON.stringify(data),id);statusNode.textContent='Sending '+action.replaceAll('_',' ')+'…';}
-    function successMessage(action){return ({set_mode:'Reading mode updated.',previous:'Previous page turned.',next:'Next page turned.',previous_chapter:'Previous chapter selected.',next_chapter:'Next chapter selected.',rsvp_previous_word:'Moved to previous word.',rsvp_next_word:'Moved to next word.',rsvp_back_15:'Moved back 15 words.',rsvp_forward_15:'Moved forward 15 words.',rsvp_audio_toggle:'Audio toggled.',rsvp_audio_rate:'Audio speed changed.',rsvp_settings_toggle:'Speed Reading settings opened.',rsvp_font_smaller:'Speed Reading font decreased.',rsvp_font_larger:'Speed Reading font increased.',speed_pause:'Playback toggled.',speed_slower:'Reading slowed down.',speed_faster:'Reading sped up.',launch_readest:'Readest opened.',close_readest:'Readest closed.',theme:'Readest theme cycled.'})[action]||'Command sent.';}
+    function successMessage(action){return ({set_mode:'Reading mode updated.',previous:'Previous page turned.',next:'Next page turned.',previous_chapter:'Previous chapter selected.',next_chapter:'Next chapter selected.',paragraph_previous:'Previous paragraph selected.',paragraph_next:'Next paragraph selected.',rsvp_previous_word:'Moved to previous word.',rsvp_next_word:'Moved to next word.',rsvp_back_15:'Moved back 15 words.',rsvp_forward_15:'Moved forward 15 words.',rsvp_audio_toggle:'Audio toggled.',rsvp_audio_rate:'Audio speed changed.',rsvp_settings_toggle:'Speed Reading settings opened.',rsvp_font_smaller:'Speed Reading font decreased.',rsvp_font_larger:'Speed Reading font increased.',speed_pause:'Playback toggled.',speed_slower:'Reading slowed down.',speed_faster:'Reading sped up.',launch_readest:'Readest opened.',close_readest:'Readest closed.',theme:'Readest theme cycled.'})[action]||'Command sent.';}
     function onRemoteResult(id,action,success,message){const request=pending.get(id);pending.delete(id);if(!request)return;if(success){statusNode.textContent=successMessage(action);if(action==='set_mode'){activeMode=request.data.mode;if(request.afterSuccess)request.afterSuccess();}else if(request.afterSuccess)request.afterSuccess();if(action==='rsvp_audio_toggle'){audioActive=!audioActive;syncAudioState();}}else statusNode.textContent=message||'Command failed. Check that Readest is open and focused.';}
-    function syncAudioState(){const toggle=document.getElementById('audio-toggle');const rate=document.getElementById('audio-rate');const wpm=document.getElementById('wpm-controls');if(!toggle||!rate||!wpm)return;toggle.setAttribute('aria-pressed',String(audioActive));toggle.innerHTML=`<svg><use href="${audioActive?'#i-sound':'#i-sound-off'}"/></svg><span>${audioActive?'Stop audio':'Play audio'}</span>`;rate.hidden=!audioActive;wpm.hidden=audioActive;}
+    function syncAudioState(){const toggle=document.getElementById('audio-toggle');const rate=document.getElementById('audio-rate');const wpm=document.getElementById('wpm-controls');const row=document.getElementById('audio-row');if(!toggle||!rate||!wpm||!row)return;toggle.setAttribute('aria-pressed',String(audioActive));toggle.innerHTML=`<svg><use href="${audioActive?'#i-sound':'#i-sound-off'}"/></svg><span>${audioActive?'Stop audio':'Play audio'}</span>`;rate.hidden=!audioActive;row.classList.toggle('audio-active',audioActive);wpm.hidden=audioActive;}
     function toggleAudio(){send('rsvp_audio_toggle');}
     function toggleSpeedSettings(){const gear=document.getElementById('rsvp-gear');const panel=document.getElementById('settings');const expanded=gear.getAttribute('aria-expanded')!=='true';gear.setAttribute('aria-expanded',String(expanded));panel.hidden=!expanded;send('rsvp_settings_toggle');}
     document.getElementById('connection').textContent='Connected to laptop receiver';renderHome();

@@ -372,8 +372,8 @@ def click_rsvp_audio():
     scale = max(1.0, user32.GetDpiForWindow(hwnd) / 96.0)
     width_css = width / scale
     height_css = height / scale
-    audio_x = 28 if width_css < 768 else max(20, width_css / 2 - 184)
-    audio_y = max(20, height_css - 64)
+    audio_x = 60 if width_css < 768 else max(20, width_css / 2 - 260)
+    audio_y = max(20, height_css - 42)
     return click_readest_client(audio_x / width_css, audio_y / height_css)
 
 def click_rsvp_settings():
@@ -390,7 +390,10 @@ def click_rsvp_settings():
     scale = max(1.0, user32.GetDpiForWindow(hwnd) / 96.0)
     width_css = width / scale
     height_css = height / scale
-    return click_readest_client((width_css - 30) / width_css, (height_css - 52) / height_css)
+    # The RSVP transport row is centered; its gear is about 255 CSS px after center.
+    gear_x = min(width_css - 22, width_css * 0.5 + 255)
+    gear_y = max(20, height_css - 42)
+    return click_readest_client(gear_x / width_css, gear_y / height_css)
 
 def click_rsvp_font(smaller):
     hwnd = user32.GetForegroundWindow()
@@ -406,9 +409,9 @@ def click_rsvp_font(smaller):
     scale = max(1.0, user32.GetDpiForWindow(hwnd) / 96.0)
     width_css = width / scale
     height_css = height / scale
-    # RSVP's settings row puts the Font stepper after punctuation delay.
-    x_fraction = 0.48 if smaller else 0.54
-    y_fraction = (height_css - 38) / height_css
+    # Font stepper is centered in RSVP's settings row, below the transport bar.
+    x_fraction = 0.445 if smaller else 0.492
+    y_fraction = max(20, height_css - 42) / height_css
     return click_readest_client(x_fraction, y_fraction)
 
 def press_modified_key(modifier, key):
@@ -441,20 +444,26 @@ def set_rsvp_audio_rate(rate):
     width_css = width / scale
     height_css = height / scale
 
-    if not click_readest_client((width_css - 58) / width_css, 26 / height_css):
+    # Audio pace is the compact selector in RSVP's upper-left header, separate
+    # from the speaker button in the transport row.
+    rate_x = min(90, width_css - 20)
+    if not click_readest_client(rate_x / width_css, min(26, height_css - 12) / height_css):
         return False
     time.sleep(0.15)
     index = min(range(len(rates)), key=lambda candidate: abs(rates[candidate] - rate))
+    # The popup rows are 40 CSS px tall; the menu shows eight rows at a time.
     visible_index = index
     if index > 7:
-        menu_y = min(height_css - 80, 180) / height_css
-        if not move_readest_cursor((width_css - 58) / width_css, menu_y):
+        menu_y = 0.18
+        menu_x = min(110, width_css - 12) / width_css
+        if not move_readest_cursor(menu_x, menu_y):
             return False
         user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, -480, 0)
         time.sleep(0.12)
-        visible_index = index - 3
-    option_y = (54 + (visible_index + 0.5) * 32) / height_css
-    return click_readest_client((width_css - 58) / width_css, option_y)
+        visible_index = index - 4
+    menu_x = min(110, width_css - 12) / width_css
+    option_y = (74 + visible_index * 40) / height_css
+    return click_readest_client(menu_x, option_y)
 
 def click_autoscroll_control(offset_from_center):
     # Readest's pill sits 24 CSS px above the reader area's bottom. Its center
@@ -654,6 +663,10 @@ class Handler(BaseHTTPRequestHandler):
             press_chord(VK_MENU, VK_LEFT)
         elif action == "next_chapter":
             press_chord(VK_MENU, VK_RIGHT)
+        elif action == "paragraph_previous":
+            press_key(VK_LEFT)
+        elif action == "paragraph_next":
+            press_key(VK_RIGHT)
         elif action == "key_up":
             press_key(VK_UP)
         elif action == "key_down":
