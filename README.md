@@ -59,6 +59,14 @@ The Android app supports Auto, Day, and Night appearance; tap the sun/moon icon 
 
 The paired Android app now loads its control interface from the Windows receiver over certificate-pinned HTTPS. The receiver package contains the control page, so UI and control-action updates can be delivered by updating the Windows receiver without rebuilding the APK. Pairing and connection settings remain in the Android app. Restart the receiver after replacing its package so it loads the latest control page and actions.
 
+### Browser controller
+
+The Windows receiver also hosts the remote control interface locally for testing or direct laptop control. With the receiver running, open:
+
+`http://127.0.0.1:18766/`
+
+in any web browser on the laptop (Chrome, Edge, Firefox). Requests originating from loopback (`127.0.0.1`) are authorized automatically without requiring pairing credentials or SSL certificate exceptions.
+
 The mode buttons control Readest on the laptop, not the phone's own display. The remote opens with Normal selected and remembers the last mode successfully sent to the receiver so it can turn that mode off before switching. Tap any active non-Normal mode again, or tap Normal, to return to Normal. If you change modes directly in Readest, its actual mode can differ from the remote's remembered mode; return Readest to Normal before continuing with the phone. Switching into Auto Scroll assumes Readest starts in paginated mode because `Shift+J` toggles the layout. If Readest is already scrolled, first switch it to paginated mode in Readest.
 
 The remote follows Readest's documented shortcuts: `Shift+J` toggles scrolled layout, `Shift+A` toggles Auto Scroll, `Shift+P` toggles paragraph mode, `Shift+V` starts Speed Reading, `T` toggles Text to Speech, and `F11` toggles full screen. TTS uses Space for play/pause and `Ctrl+[` / `Ctrl+]` for previous/next sentence. In Speed Reading, Space toggles play/pause, `,` / `.` step to the previous/next word, Left/Down slows, Right/Up speeds up, and `Shift+Left` / `Shift+Right` jump 15 words. Audio is toggled by clicking the RSVP speaker control; audio-rate choices are 0.50x to 3.00x in 0.25x steps. `Ctrl+0` resets zoom. (`Ctrl+T` is Readest's Translate shortcut, so the remote uses `T` for TTS.) If the receiver file was updated while tray mode was running, restart the receiver so it loads the new actions. See [Readest Reading docs](https://readest.com/docs/reading), [Advanced keyboard shortcuts](https://readest.com/docs/advanced), and [Customization](https://readest.com/docs/customization).

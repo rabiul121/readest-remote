@@ -23,8 +23,14 @@ from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
 HOST = "0.0.0.0"
 PORT = 18765
+HTTP_PORT = 18766
 DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", tempfile.gettempdir()), "ReadestRemote")
 CERT_FILE = os.path.join(DATA_DIR, "receiver-cert.pem")
 KEY_FILE = os.path.join(DATA_DIR, "receiver-key.pem")
@@ -91,6 +97,9 @@ def make_server():
     context.load_cert_chain(CERT_FILE, KEY_FILE)
     server.socket = context.wrap_socket(server.socket, server_side=True)
     return server
+
+def make_http_server():
+    return ThreadingHTTPServer(("127.0.0.1", HTTP_PORT), Handler)
 
 def local_ipv4_addresses():
     """Return LAN IPv4s, preferring the address Windows routes through."""
@@ -200,6 +209,8 @@ user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
 user32.SetCursorPos.restype = wintypes.BOOL
 user32.GetDpiForWindow.argtypes = [wintypes.HWND]
 user32.GetDpiForWindow.restype = wintypes.UINT
+user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+user32.GetAncestor.restype = wintypes.HWND
 user32.mouse_event.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.c_size_t]
 user32.mouse_event.restype = None
 
@@ -238,12 +249,10 @@ def type_text(text):
             user32.keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, 0)
         time.sleep(0.012)
 
-def foreground_is_readest(hwnd):
-    if not hwnd:
+def is_pid_readest(pid):
+    if not pid:
         return False
-    process_id = wintypes.DWORD()
-    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
-    process = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, process_id.value)
+    process = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not process:
         return False
     try:
@@ -254,6 +263,25 @@ def foreground_is_readest(hwnd):
         return os.path.basename(path.value).casefold() == "readest.exe"
     finally:
         kernel32.CloseHandle(process)
+
+def foreground_is_readest(hwnd):
+    if not hwnd:
+        return False
+    process_id = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+    if is_pid_readest(process_id.value):
+        return True
+    root = user32.GetAncestor(hwnd, 3)  # GA_ROOTOWNER
+    if root and root != hwnd:
+        user32.GetWindowThreadProcessId(root, ctypes.byref(process_id))
+        if is_pid_readest(process_id.value):
+            return True
+    root2 = user32.GetAncestor(hwnd, 2)  # GA_ROOT
+    if root2 and root2 != hwnd and root2 != root:
+        user32.GetWindowThreadProcessId(root2, ctypes.byref(process_id))
+        if is_pid_readest(process_id.value):
+            return True
+    return False
 
 def readest_executable():
     candidates = [
@@ -276,20 +304,62 @@ def readest_executable():
             return os.path.abspath(path)
     return None
 
+def ensure_interactive_desktop():
+    try:
+        hwinsta = user32.OpenWindowStationW("WinSta0", False, 0x037F)
+        if hwinsta:
+            user32.SetProcessWindowStation(hwinsta)
+            hdesk = user32.OpenDesktopW("Default", 0, False, 0x01FF)
+            if hdesk:
+                user32.SetThreadDesktop(hdesk)
+                return True
+    except Exception:
+        pass
+    return False
+
 def readest_windows():
+    ensure_interactive_desktop()
     found = []
     callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
     @callback_type
     def collect(hwnd, _):
         if user32.IsWindowVisible(hwnd) and foreground_is_readest(hwnd):
-            found.append(hwnd)
+            rect = wintypes.RECT()
+            user32.GetClientRect(hwnd, ctypes.byref(rect))
+            has_area = (rect.right - rect.left > 100) and (rect.bottom - rect.top > 100)
+            has_title = user32.GetWindowTextLengthW(hwnd) > 0
+            found.append((has_area, has_title, hwnd))
         return True
 
     user32.EnumWindows(collect, 0)
-    return found
+    found.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [item[2] for item in found]
+
+def ensure_readest_focus():
+    ensure_interactive_desktop()
+    hwnd = user32.GetForegroundWindow()
+    if foreground_is_readest(hwnd):
+        return hwnd
+    windows = readest_windows()
+    if not windows:
+        return None
+    user32.ShowWindow(windows[0], SW_RESTORE)
+    user32.SetForegroundWindow(windows[0])
+    time.sleep(0.06)
+    return windows[0]
 
 def launch_readest():
+    """Focus Readest if it is already running, or launch it on the interactive desktop.
+
+    When the receiver runs as a service / background process it lives on a
+    non-interactive window station.  Calling os.startfile() or Popen() from
+    that context creates the child process on the same non-interactive station,
+    so its windows never appear on the user's screen.  Instead we register a
+    one-shot Task Scheduler job and immediately run it; the Task Scheduler
+    executes the task on the user's interactive session (Session 1, WinSta0).
+    """
+    ensure_interactive_desktop()
     windows = readest_windows()
     if windows:
         user32.ShowWindow(windows[0], SW_RESTORE)
@@ -298,8 +368,48 @@ def launch_readest():
     executable = readest_executable()
     if not executable:
         return False
-    subprocess.Popen([executable], cwd=os.path.dirname(executable), close_fds=True)
-    return True
+    task_name = "ReadestRemoteLaunch"
+    work_dir = os.path.dirname(executable)
+    try:
+        # Register the task (overwrite any stale entry), run it, then delete it.
+        subprocess.run(
+            ["schtasks", "/create", "/f",
+             "/tn", task_name,
+             "/tr", f'"{executable}"',
+             "/sc", "once",
+             "/st", "00:00",
+             "/it"],          # /it = only when user is logged in (interactive)
+            check=True,
+            capture_output=True,
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        subprocess.run(
+            ["schtasks", "/run", "/tn", task_name],
+            check=True,
+            capture_output=True,
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        subprocess.run(
+            ["schtasks", "/delete", "/f", "/tn", task_name],
+            capture_output=True,
+            timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return True
+    except Exception:
+        # Fallback: best-effort Popen (works when already on interactive station)
+        try:
+            subprocess.Popen(
+                [executable],
+                cwd=work_dir,
+                close_fds=True,
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            )
+            return True
+        except OSError:
+            return False
 
 def close_readest():
     windows = readest_windows()
@@ -314,8 +424,8 @@ def close_readest():
     return True
 
 def refocus_reading_view():
-    hwnd = user32.GetForegroundWindow()
-    if not foreground_is_readest(hwnd):
+    hwnd = ensure_readest_focus()
+    if not hwnd:
         return False
 
     # The command palette leaves focus on its last toolbar selection. A click
@@ -335,8 +445,8 @@ def refocus_reading_view():
 
 def move_readest_cursor(x_fraction, y_fraction):
     """Move the pointer to a point relative to the foreground Readest client."""
-    hwnd = user32.GetForegroundWindow()
-    if not foreground_is_readest(hwnd):
+    hwnd = ensure_readest_focus()
+    if not hwnd:
         return False
     rect = wintypes.RECT()
     if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
@@ -359,8 +469,8 @@ def click_readest_client(x_fraction, y_fraction):
     return True
 
 def click_rsvp_audio():
-    hwnd = user32.GetForegroundWindow()
-    if not foreground_is_readest(hwnd):
+    hwnd = ensure_readest_focus()
+    if not hwnd:
         return False
     rect = wintypes.RECT()
     if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
@@ -377,8 +487,8 @@ def click_rsvp_audio():
     return click_readest_client(audio_x / width_css, audio_y / height_css)
 
 def click_rsvp_settings():
-    hwnd = user32.GetForegroundWindow()
-    if not foreground_is_readest(hwnd):
+    hwnd = ensure_readest_focus()
+    if not hwnd:
         return False
     rect = wintypes.RECT()
     if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
@@ -396,8 +506,8 @@ def click_rsvp_settings():
     return click_readest_client(gear_x / width_css, gear_y / height_css)
 
 def click_rsvp_font(smaller):
-    hwnd = user32.GetForegroundWindow()
-    if not foreground_is_readest(hwnd):
+    hwnd = ensure_readest_focus()
+    if not hwnd:
         return False
     rect = wintypes.RECT()
     if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
@@ -420,6 +530,7 @@ def press_modified_key(modifier, key):
     press_key(key)
     time.sleep(0.03)
     user32.keybd_event(modifier, 0, KEYEVENTF_KEYUP, 0)
+    user32.keybd_event(modifier, 0, KEYEVENTF_KEYUP, 0)
 
 def set_rsvp_audio_rate(rate):
     rates = (0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0)
@@ -430,8 +541,8 @@ def set_rsvp_audio_rate(rate):
     if not any(abs(rate - supported) < 0.001 for supported in rates):
         return False
 
-    hwnd = user32.GetForegroundWindow()
-    if not foreground_is_readest(hwnd):
+    hwnd = ensure_readest_focus()
+    if not hwnd:
         return False
     rect = wintypes.RECT()
     if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
@@ -470,8 +581,8 @@ def click_autoscroll_control(offset_from_center):
     # is about 45 CSS px above that edge. Move away first so Windows generates
     # a fresh mouse-move event even when the pointer was already on the button;
     # that event reveals a faded pill. Then move to the target and click once.
-    hwnd = user32.GetForegroundWindow()
-    if not foreground_is_readest(hwnd):
+    hwnd = ensure_readest_focus()
+    if not hwnd:
         return False
     rect = wintypes.RECT()
     if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
@@ -509,7 +620,7 @@ def set_reading_mode(previous_mode, target_mode):
     valid_modes = {"normal", "autoscroll", "paragraph", "speed", "tts"}
     if previous_mode not in valid_modes or target_mode not in valid_modes:
         return False
-    if not foreground_is_readest(user32.GetForegroundWindow()):
+    if not ensure_readest_focus():
         return False
 
     # Always leave the current mode explicitly before entering another one.
@@ -525,7 +636,6 @@ def set_reading_mode(previous_mode, target_mode):
         press_key(VK_ESCAPE)
         time.sleep(0.25)
     elif previous_mode == "tts":
-        press_key(VK_T)
         time.sleep(0.2)
 
     if target_mode == "autoscroll":
@@ -557,6 +667,16 @@ def cycle_readest_theme():
     refocus_reading_view()
 
 class Handler(BaseHTTPRequestHandler):
+    def end_headers(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Device-Id, X-Device-Token")
+        super().end_headers()
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.end_headers()
+
     def send_json(self, status, data):
         body = json.dumps(data).encode("utf-8")
         self.send_response(status)
@@ -575,7 +695,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"ok": True, "service": "Readest Remote", "authenticated": True})
             else:
                 self.send_json(401, {"ok": False, "error": "Unauthorized"})
-        elif path == "/remote-ui":
+        elif path in ("/", "/remote-ui"):
             if not self.authorized():
                 self.send_json(401, {"ok": False, "error": "Unauthorized"})
                 return
@@ -603,6 +723,8 @@ class Handler(BaseHTTPRequestHandler):
         return data
 
     def authorized(self):
+        if getattr(self, "client_address", None) and self.client_address[0] in ("127.0.0.1", "::1"):
+            return True
         device_id = self.headers.get("X-Device-Id", "")
         token = self.headers.get("X-Device-Token", "")
         record = load_devices().get(device_id, {})
@@ -651,7 +773,22 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(400, {"ok": False, "error": "Invalid JSON"})
             return
 
-        if action == "set_mode":
+        if action == "launch_readest":
+            if not launch_readest():
+                self.send_json(404, {"ok": False, "error": "Could not find Readest.exe in its usual install locations or App Paths"})
+                return
+        elif action == "close_readest":
+            if not close_readest():
+                self.send_json(409, {"ok": False, "error": "Readest is not running or has no open window"})
+                return
+        else:
+            if not ensure_readest_focus():
+                self.send_json(409, {"ok": False, "error": "Readest must be open and running"})
+                return
+
+        if action in ("launch_readest", "close_readest"):
+            pass
+        elif action == "set_mode":
             if not set_reading_mode(data.get("from_mode"), data.get("mode")):
                 self.send_json(409, {"ok": False, "error": "Readest must be focused and mode names must be valid"})
                 return
@@ -696,22 +833,7 @@ class Handler(BaseHTTPRequestHandler):
         elif action == "font_reset":
             press_chord(VK_CONTROL, 0x30)  # Ctrl+0 resets Readest zoom.
         elif action == "fullscreen":
-            windows = readest_windows()
-            if not windows:
-                self.send_json(409, {"ok": False, "error": "Readest is not running with an open window"})
-                return
-            user32.ShowWindow(windows[0], SW_RESTORE)
-            user32.SetForegroundWindow(windows[0])
-            time.sleep(0.08)
             press_key(VK_F11)
-        elif action == "launch_readest":
-            if not launch_readest():
-                self.send_json(404, {"ok": False, "error": "Could not find Readest.exe in its usual install locations or App Paths"})
-                return
-        elif action == "close_readest":
-            if not close_readest():
-                self.send_json(409, {"ok": False, "error": "Readest is not running or has no open window"})
-                return
         elif action == "enter_autoscroll":
             # Readest's Auto Scroll only runs in scrolled layout.
             press_chord(VK_SHIFT, VK_J)
@@ -728,7 +850,9 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(0.15)
             press_chord(VK_SHIFT, VK_V)
         elif action == "speed_to_normal":
-            press_key(VK_ESCAPE)
+            press_chord(VK_SHIFT, VK_P)  # Exit paragraph mode if active
+            time.sleep(0.15)
+            press_key(VK_ESCAPE)         # Exit speed reading if active
         elif action == "autoscroll_pause":
             # A click in the reader pauses or resumes an active Auto Scroll session.
             click_readest_client(0.5, 0.5)
@@ -759,9 +883,13 @@ class Handler(BaseHTTPRequestHandler):
         elif action == "rsvp_next_word":
             press_key(VK_OEM_PERIOD)
         elif action == "rsvp_back_15":
-            press_modified_key(VK_SHIFT, VK_LEFT)
+            press_key(VK_ESCAPE)
+            time.sleep(0.18)
+            press_chord(VK_SHIFT, VK_LEFT)
         elif action == "rsvp_forward_15":
-            press_modified_key(VK_SHIFT, VK_RIGHT)
+            press_key(VK_ESCAPE)
+            time.sleep(0.18)
+            press_chord(VK_SHIFT, VK_RIGHT)
         elif action == "rsvp_previous":
             speed_reading_navigation(VK_LEFT)
         elif action == "rsvp_next":
@@ -785,12 +913,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, {"ok": True, "action": action})
 
     def log_message(self, fmt, *args):
-        print("%s - %s" % (self.address_string(), fmt % args))
+        try:
+            print("%s - %s" % (self.address_string(), fmt % args))
+        except Exception:
+            pass
 
 class ServerController:
     def __init__(self):
         self.server = None
+        self.http_server = None
         self.thread = None
+        self.http_thread = None
         self.lock = threading.Lock()
 
     @property
@@ -804,16 +937,31 @@ class ServerController:
             self.server = make_server()
             self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
             self.thread.start()
-        print(f"Readest Remote receiver listening on port {PORT}")
+            try:
+                self.http_server = make_http_server()
+                self.http_thread = threading.Thread(target=self.http_server.serve_forever, daemon=True)
+                self.http_thread.start()
+            except OSError as e:
+                print(f"Could not start local HTTP browser bridge on port {HTTP_PORT}: {e}")
+        print(f"Readest Remote receiver listening on port {PORT} (HTTPS) and {HTTP_PORT} (HTTP browser)")
         addresses = local_ipv4_addresses()
         print(f"Use {addresses[0]} in the Android app." if addresses else "Could not detect a laptop IPv4 address.")
 
     def stop(self):
         with self.lock:
             server = self.server
+            http_server = self.http_server
             thread = self.thread
+            http_thread = self.http_thread
             self.server = None
+            self.http_server = None
             self.thread = None
+            self.http_thread = None
+        if http_server is not None:
+            http_server.shutdown()
+            http_server.server_close()
+            if http_thread is not None:
+                http_thread.join(timeout=2)
         if server is not None:
             server.shutdown()
             server.server_close()
@@ -1120,14 +1268,24 @@ def run_tray():
 
 def run_console():
     server = make_server()
-    print(f"Readest Remote receiver listening on port {PORT}")
+    http_server = None
+    try:
+        http_server = make_http_server()
+        threading.Thread(target=http_server.serve_forever, daemon=True).start()
+    except OSError as e:
+        print(f"Could not start local HTTP browser bridge on port {HTTP_PORT}: {e}")
+    print(f"Readest Remote receiver listening on port {PORT} (HTTPS) and {HTTP_PORT} (HTTP)")
     print("HTTPS receiver ready. Open the tray menu and show a pairing QR.")
+    print(f"Browser controller available at: http://127.0.0.1:{HTTP_PORT}/")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopping receiver...")
     finally:
+        if http_server is not None:
+            http_server.shutdown()
+            http_server.server_close()
         server.server_close()
 
 
